@@ -61,7 +61,7 @@ LORA_ALPHA=64
 LORA_DROPOUT=0.05
 
 # ---- Accelerate config (ZeRO-3) ----
-ACC_CFG="${REPO_ROOT}/scripts/accelerate_configs/zero3.yaml"
+ACC_CFG="${REPO_ROOT}/scripts/accelerate_configs/zero2.yaml"
 
 # ---- Per-node launch function ----
 LOG_DIR="${REPO_ROOT}/.logs"

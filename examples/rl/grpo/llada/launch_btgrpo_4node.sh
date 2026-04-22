@@ -29,14 +29,14 @@ export NCCL_IB_TIMEOUT=22
 export NCCL_IB_RETRY_CNT=13
 # Keep PyTorch allocator happy during the generation-gather spike
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:512
-# Shared HuggingFace cache via the AzureML blob mount
-export HF_HOME="${HF_HOME:-/scratch/workspaceblobstore/hf_cache}"
+# Local HuggingFace cache on each node (no shared blob mount across nodes)
+export HF_HOME="${HF_HOME:-/scratch/hf_cache}"
 mkdir -p "${HF_HOME}"
 
 # ---- Hyperparameters (see docs/BT_GRPO.md §5) ----
 MODEL="GSAI-ML/LLaDA-8B-Instruct"
 DATASET="gsm8k"
-OUTPUT_DIR="${OUTPUT_DIR:-/scratch/workspaceblobstore/dllm_runs/llada-btgrpo-4n}"
+OUTPUT_DIR="${OUTPUT_DIR:-/scratch/dllm_runs/llada-btgrpo-4n}"
 mkdir -p "${OUTPUT_DIR}"
 
 PER_DEVICE_BS=2
@@ -73,7 +73,7 @@ launch_cmd() {
     cat <<EOF
 cd ${REPO_ROOT} && \
 export PYTHONPATH=${REPO_ROOT} && \
-export HF_HOME=${HF_HOME} && \
+export HF_HOME=/scratch/hf_cache && \
 export TOKENIZERS_PARALLELISM=false && \
 export NCCL_ASYNC_ERROR_HANDLING=1 && \
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:512 && \

@@ -39,8 +39,8 @@ DATASET="gsm8k"
 OUTPUT_DIR="${OUTPUT_DIR:-/scratch/dllm_runs/llada-btgrpo-4n}"
 mkdir -p "${OUTPUT_DIR}"
 
-PER_DEVICE_BS=2
-NUM_GENERATIONS=8           # == fork group G
+PER_DEVICE_BS=4
+NUM_GENERATIONS=4           # == fork group G (must equal PER_DEVICE_BS so each GPU holds one full fork group)
 NUM_ITERATIONS=4
 GRAD_ACC=1
 

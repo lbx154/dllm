@@ -472,11 +472,13 @@ class DiffuGRPOTrainer(GRPOTrainer):
             is_std_zero.float().mean().item()
         )
 
-        self._textual_logs["prompt"].extend(gather_object(prompts_text))
-        self._textual_logs["completion"].extend(gather_object(completions_text))
-        for i, name in enumerate(self.reward_func_names):
-            self._textual_logs["rewards"][name].extend(rewards_per_func[:, i].tolist())
-        self._textual_logs["advantages"].extend(all_process_advantages.tolist())
+        _logs = getattr(self, "_textual_logs", None) or getattr(self, "_logs", None)
+        if _logs is not None:
+            _logs["prompt"].extend(gather_object(prompts_text))
+            _logs["completion"].extend(gather_object(completions_text))
+            for i, name in enumerate(self.reward_func_names):
+                _logs["rewards"][name].extend(rewards_per_func[:, i].tolist())
+            _logs["advantages"].extend(all_process_advantages.tolist())
 
         return {
             "prompt_ids": prompt_ids,

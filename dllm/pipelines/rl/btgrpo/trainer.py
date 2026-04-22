@@ -51,6 +51,15 @@ class BTGRPOConfig(DiffuGRPOConfig):
     # such positions contribute 0 to the group-relative advantage, but makes
     # the mechanism explicit (and a tiny bit faster).
     apply_divergent_mask: bool = True
+    # Group-std normalization for advantages. BT-GRPO defaults to True (classic
+    # GRPO formula) because binary correctness rewards at G=4 produce many
+    # zero-std groups whose advantage magnitude otherwise differs wildly across
+    # batches. Normalizing makes the PPO clip behave scale-invariantly.
+    scale_rewards: bool = True
+    # KL estimator: "k3" (TRL default, exp(r)-1-r — unstable on dLLM where
+    # log-ratio magnitudes can reach 50+) or "k2" (0.5 * r^2, bounded and
+    # strictly non-negative). "k2_clipped" additionally clamps r to [-5, 5].
+    kl_estimator: str = "k2_clipped"
 
 
 class BTGRPOTrainer(DiffuGRPOTrainer):
@@ -144,9 +153,20 @@ class BTGRPOTrainer(DiffuGRPOTrainer):
         )
         batch["completion_mask"] = batch["completion_mask"] * divergent_flat
 
+        # ---- BT-GRPO advantage rescaling: 1/f_D correction ----
+        # Standard GRPO applies A_g over all T completion tokens; BT-GRPO only
+        # applies it over divergent tokens (fraction f_D). To keep the expected
+        # policy-gradient magnitude matched to vanilla GRPO we multiply the
+        # advantage by 1/f_D (clipped to avoid blow-ups when f_D -> 0).
+        div_frac = float(divergent.float().mean().item())
+        adv_scale = 1.0 / max(div_frac, 0.1)  # cap at 10x
+        if "advantages" in batch and isinstance(batch["advantages"], torch.Tensor):
+            batch["advantages"] = batch["advantages"] * adv_scale
+
         # Log the divergent fraction for diagnostics
         mode = "train" if self.model.training else "eval"
         self._metrics[mode].setdefault("btgrpo/divergent_frac", []).append(
-            float(divergent.float().mean().item())
+            div_frac
         )
+        self._metrics[mode].setdefault("btgrpo/adv_scale", []).append(adv_scale)
         return batch

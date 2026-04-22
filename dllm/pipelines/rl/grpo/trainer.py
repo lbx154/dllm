@@ -50,6 +50,11 @@ class DiffuGRPOConfig(GRPOConfig):
     # Disable advantage std-normalization by default to match the diffu-GRPO reference
     # implementation (d1), which does not divide advantages by their std.
     scale_rewards: bool = False
+    # Clip |log(pi_ref / pi_policy)| per token before plugging into TRL's k3
+    # KL estimator  KL ~ exp(r) - 1 - r.  Without this, dLLM's unbounded
+    # per-token log-probs cause exp() to overflow and yield KL values ~1e9.
+    # Set to None to disable clipping (unsafe on dLLM).
+    kl_ratio_clip: Optional[float] = 5.0
 
 
 class DiffuGRPOTrainer(GRPOTrainer):
@@ -380,6 +385,21 @@ class DiffuGRPOTrainer(GRPOTrainer):
                     ref_logps_list, dim=1
                 )  # [N, num_iterations, L]
                 ref_per_token_logps = ref_logps_list[0]
+
+                # --- KL estimator stabilization (k3 -> bounded k3) ---
+                # TRL uses k3:  KL ~ exp(r) - 1 - r  with  r = logp_ref - logp_policy.
+                # On dLLM, per-token |r| can reach 50+ because masked-position
+                # log-probs are unbounded, making exp(r) numerically explode
+                # (observed KL ~ 1e9). We clamp r into [-c, c] (default c=5) so
+                # exp(r) is bounded by e^c = 148 per token. On-policy (first
+                # iter) old_logps == policy_logps, so clipping r against
+                # old_logps is the tightest valid approximation.
+                clip = getattr(self.args, "kl_ratio_clip", None)
+                if clip is not None and old_logps_all is not None:
+                    ref_logps_all = old_logps_all + torch.clamp(
+                        ref_logps_all - old_logps_all, -clip, clip
+                    )
+                    ref_per_token_logps = ref_logps_all[:, 0]
             else:
                 ref_logps_all = None
                 ref_per_token_logps = None

@@ -42,14 +42,18 @@ NUM_RE = re.compile(r"'([a-zA-Z_][\w/]*)'\s*:\s*([-+0-9.eE]+)")
 
 NODES = ["node-0", "node-1", "node-2", "node-3"]
 TRACK_KEYS = [
-    "loss",
     "reward",
+    "rewards/correctness_reward_func/mean",
+    "rewards/soft_format_reward_func/mean",
+    "rewards/xmlcount_reward_func/mean",
+    "rewards/int_reward_func/mean",
     "reward_std",
+    "btgrpo/divergent_frac",
+    "completions/length/mean",
     "kl",
-    "completion_length",
     "grad_norm",
+    "loss",
     "learning_rate",
-    "clip_ratio",
 ]
 
 

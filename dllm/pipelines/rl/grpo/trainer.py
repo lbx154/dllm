@@ -480,6 +480,11 @@ class DiffuGRPOTrainer(GRPOTrainer):
                 _logs["rewards"][name].extend(rewards_per_func[:, i].tolist())
             _logs["advantages"].extend(all_process_advantages.tolist())
 
+        # trl>=0.19 expects num_items_in_batch in the batch dict (DAPO normalizer).
+        # Compute from completion_mask and aggregate across processes.
+        local_num = completion_mask.sum()
+        num_items_in_batch = self.accelerator.reduce(local_num.to(device), reduction="sum")
+
         return {
             "prompt_ids": prompt_ids,
             "prompt_mask": prompt_mask,
@@ -488,6 +493,7 @@ class DiffuGRPOTrainer(GRPOTrainer):
             "advantages": advantages,
             "old_per_token_logps": old_per_token_logps,
             "ref_per_token_logps": ref_per_token_logps,
+            "num_items_in_batch": num_items_in_batch,
             # Per-iteration stacked logps [N, num_iterations, L]; included in the
             # batch dict to stay aligned with sequences (shuffle is disabled in _prepare_inputs).
             "diffu_old_logps_all": old_logps_all,

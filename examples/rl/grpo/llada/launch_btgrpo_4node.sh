@@ -44,17 +44,19 @@ NUM_GENERATIONS=4           # == fork group G (must equal PER_DEVICE_BS so each 
 NUM_ITERATIONS=1            # pure on-policy — matches BT-GRPO's per-step-credit design best + 4x faster
 GRAD_ACC=1
 
-FORK_FRAC=0.35              # earlier fork → more divergent positions & richer credit-assignment signal
+FORK_FRAC=0.5               # back to run1 — keeps CoT coherence before fork
 BLOCK_SIZE=32
-STEPS=64                    # halved from 128 → ~2x faster generation (minor quality trade-off)
+STEPS=64
 P_MASK_PROMPT=0.15
 MAX_PROMPT_LEN=256
-MAX_COMPLETION_LEN=200      # observed mean completion ~210 — cut trailing waste
+MAX_COMPLETION_LEN=200
 
-LR=1.5e-6                   # halved from 3e-6 after seeing early gradient blow-ups
-BETA=0.04                   # doubled KL weight — stronger regularization against reward hacking
-EPSILON=0.3                 # tighter PPO clip (was 0.5) because num_iterations=1 → small ratios anyway
-MAX_STEPS=8000              # fewer total steps; per-step is ~5x faster so wall clock similar
+LR=1.5e-6
+BETA=0.0                    # KILL KL term entirely — k3 estimator explodes on dLLM (r in [-50,50])
+                            # and even bounded KL dominated loss 1000:1 over reward gradient.
+                            # PPO clip below is our only trust region (original DeepSeek GRPO setting).
+EPSILON=0.2                 # tight PPO clip (was 0.3) — sole trust-region mechanism now
+MAX_STEPS=8000
 
 LORA_R=64                   # halved LoRA capacity → smaller effective step size, less overshoot
 LORA_ALPHA=32
@@ -108,7 +110,7 @@ ${PY} -m accelerate.commands.launch \
     --epsilon ${EPSILON} \
     --reward_weights 0.25 0.25 0.25 0.25 5.0 \
     --scale_rewards False \
-    --sync_ref_model True --ref_model_sync_steps 128 --ref_model_mixup_alpha 0.3 \
+    --sync_ref_model False \
     --logging_steps 1 --save_steps 256 --save_total_limit 3 \
     --seed 42 \
     --run_name "${RUN_TAG}" \

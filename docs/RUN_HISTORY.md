@@ -40,7 +40,7 @@ run to the exact source-tree state that produced it.
 | run11   | `bb83e7f`     | +value-head baseline `V(h)` (actor–critic)                                            |   243 |    0.002   |     0.90    |    0.22   |    0.45   |  **0.800** | μ 瞬间饱和 clamp、base 学得极慢 |
 | run12   | `514731a`     | 深度诊断重启：`max_comp 266→512`, `num_iter 1→4`, `block 32→64`, `G/bs 4→8/8`, strict_format 权重 0，xmlcount 去负奖励，fork head **关** |    14 | 尖峰波动 | ~0.6 | **~0.12** (σ=0.22)| 尖峰 1k-35k | 0.5 关 | xmlcount 正值 (+0.34)、截断 98%→<5%；但 num_iter=4 致 ratio 漂移、grad 尖峰；14 batch 太短、早停上 run13 |
 | run13   | `8e0e861`     | 重开学习型 fork head，范围 [0,1]、init 0.5、修 clamp-bug；num_iter 4→2                         |    17 | 尖峰 | ~1.2 | ~0.18 | 尖峰 4k-81k | **1.507 (越界)** | μ 改用 naked linear 后漂出 [0,1]、采样饱和 0.999，收敛到"所有题晚分支"错误极值 |
-| run14   | **TBD**       | fork head v3：sigmoid 有界 + V(h) 作为难度特征（hard→早分支、easy→晚分支）；num_iter 2→1         |   跑中 | | | | | | |
+| run14   | `b21ca7b`     | fork head v3：sigmoid 有界 + V(h) 作为难度特征（hard→早分支、easy→晚分支）；num_iter 2→1         |   跑中 | | | | | | |
 
 > Going forward every new run **must** be preceded by a git commit so
 > the run ↔ code state mapping is recoverable from `git log`. run5–run11

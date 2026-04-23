@@ -1,0 +1,392 @@
+# BT-GRPO Training Run History
+
+Chronological log of all training restarts, the motivation for each
+change, and the observed outcome. Compiled at the end of run11. All
+runs are on LLaDA-8B-Instruct + LoRA (r=64 from run2 onward) on GSM8K
+with 8× GPU, per-device batch 4, `num_generations G=4` (= 1 fork-group
+per GPU).
+
+The MA20 numbers below are moving-average over the final 20 steps of
+each run, from log re-parsing. "Corr" is `rewards/correctness_reward_func/mean`
+(0..2 range). Step counts are the number of logged TRL steps, not
+denoising steps.
+
+> run1–3 stats come from the `git log` commit messages — no logs were
+> retained. run4's log is archived but was not re-read; numbers are
+> from in-session notes. run5–run11 numbers come from log re-parsing.
+
+**Convention going forward:** every training restart is preceded by a
+git commit describing the change. The "Commit" column below maps each
+run to the exact source-tree state that produced it.
+
+---
+
+## Summary table
+
+| Run     | Commit    | Δ from previous                                                                           | Steps | MA20 loss | MA20 reward | MA20 corr | MA20 grad | fork μ | Outcome                       |
+| ------- | --------- | ----------------------------------------------------------------------------------------- | ----: | --------: | ----------: | --------: | --------: | -----: | ----------------------------- |
+| run1    | `85576bc` | initial BT-GRPO launch: `num_iter=4, β=0.02, lr=3e-6, eps=0.5, fork=0.5, lora_r=128`       |   n/a |       n/a |         n/a |  **0.47** |       n/a |   0.5  | early corr OK, but grad blowups |
+| run2    | `14c1b63` | `num_iter 4→1, β 0.02→0.04, eps 0.5→0.3, lr 3e-6→1.5e-6, fork 0.5→0.35, lora_r 128→64, reward corr×5` |   n/a |       n/a |         n/a |       n/a |       n/a | 0.35   | **KL explosion (~1e9)**       |
+| run3    | `0be8638` | code fixes: `kl_ratio_clip=5.0`, 1/f_D advantage, `scale_rewards=True`                      |   n/a |       n/a |         n/a |  **0.18** |       n/a | 0.35   | KL still 1e8, β·KL dominates; corr collapses 0.47→0.18 |
+| run4    | `bae7590` | `β 0.04→0`, `fork 0.35→0.5`, `eps 0.3→0.2`, `sync_ref_model=False`                           |  1500+|        ~0 |      ~1.05  |    ~0.20  |      low  |   0.5  | **flat, not learning**        |
+| run5.a1 | _uncommitted_ | `num_iter=2, β=0.02, lr=1e-5, scale_rewards=F`                                        |     7 |    **7e8** |     0.88    |    0.17   |   **5e9** |   0.5  | **KL blew up — killed**       |
+| run5.a2 | _uncommitted_ | `num_iter=1, β=0, lr=3e-6, scale_rewards=T, kl_ratio_clip=2.0`                        |    10 |    **1e7** |     1.17    |    0.23   |   **8e11** |  0.5  | still exploding — killed      |
+| run5    | _uncommitted_ | same as a2 but `apply_divergent_mask=False`, fix per-rank `adv_scale`                  |   159 |   -0.003   |     1.19    |    0.23   |    0.62   |   0.5  | **stable; correctness flat**  |
+| run6    | _uncommitted_ | +learned fork_frac (sigmoid policy, lr=1e-3), `max_completion_length=266`              |    34 |   -0.003   |     0.85    |    0.16   |    0.43   | **0.500** | fork head not moving         |
+| run7    | _uncommitted_ | +fp32 ForkHead, direct linear param, lr=1e-2                                          |    17 |    0.019   |     1.29    |    0.25   |    0.59   | **0.500** | fork head **still** 0.5      |
+| run8    | _uncommitted_ | REINFORCE bug fix: `rsample` → `sample().detach()`                                    |    11 |    0.022   |     1.19    |    0.23   |    0.45   |  0.745 | μ moves, but **saturates 0.8** in 1 step |
+| run9    | _uncommitted_ | lr back to 1e-3                                                                       |    19 |    0.010   |     1.31    |    0.25   |    0.50   |  0.768 | still saturates by step 3     |
+| run10   | _uncommitted_ | +LayerNorm + bottleneck 4096→8 ForkHead                                               |   122 |    0.002   |     0.69    |    0.13   |    0.44   |  0.800 | μ drifts smoothly then saturates; **reward drifts down** |
+| run11   | _uncommitted_ | +value-head baseline `V(h)` (actor–critic)                                            |    25 |   -0.004   |     0.89    |    0.17   |    0.44   |  0.762 | early; V learning             |
+
+> Going forward every new run **must** be preceded by a git commit so
+> the run ↔ code state mapping is recoverable from `git log`. run5–run11
+> don't have this unfortunately (all done in-session before the practice
+> was established).
+
+---
+
+## run1 — `85576bc` — initial BT-GRPO launch
+
+**Config:** `num_iterations=4, beta=0.02, epsilon=0.5, lr=3e-6,
+fork_frac=0.5, steps=128, max_completion_length=256, lora_r=128,
+reward_weights=uniform`.
+
+**Motivation:** vanilla BT-GRPO first run as introduced in the
+original commit. Multi-iteration PPO loop (`num_iterations=4`), moderate
+KL, relatively loose PPO clip, large LoRA.
+
+**Outcome:** early-training correctness reached ~0.47 (best of any run
+to date), but exhibited gradient blow-ups that motivated run2.
+Exact step count and end-of-run stats are not preserved (no log file
+retained).
+
+---
+
+## run2 — `14c1b63` — tune for on-policy + correctness-weighted
+
+**Changes:** `num_iterations 4→1` (pure on-policy; 4× faster/step),
+`steps 128→64`, `max_completion_length 256→200`, `beta 0.02→0.04`
+(stronger KL), `epsilon 0.5→0.3` (tighter PPO clip), `lr 3e-6→1.5e-6`
+(safer), `lora_r 128→64` (smaller effective step), `fork_frac 0.5→0.35`
+(earlier fork, more divergent tokens), `ref_model_mixup_alpha 1.0→0.3`
+(slower reference EMA), `reward_weights = [0.25, 0.25, 0.25, 0.25, 5.0]`
+(correctness-dominant).
+
+**Motivation (per commit msg):** match BT-GRPO theory (per-step credit
+works best on-policy); speed up generation; stronger regularisation to
+prevent reward hacking.
+
+**Outcome:** **KL estimator exploded to ~1e9**. The TRL `k3` estimator
+(`exp(r) − 1 − r`) overflowed on dLLM masked positions where `|r|` can
+reach 50+.
+
+---
+
+## run3 — `0be8638` — math-driven theory fixes
+
+**Code changes (no launcher change):**
+
+1. Clamp `(log π_ref − log π_old)` to `[-5, 5]` at precompute time
+   (`kl_ratio_clip=5.0`), bounding KL by `e⁵ − 6 ≈ 142` per token.
+2. Multiply the BT-GRPO advantage by `1/max(f_D, 0.1)` (capped 10×) to
+   correct for the fact that BT-GRPO sums gradient over only `f_D · T`
+   divergent tokens while vanilla GRPO sums over `T`.
+3. `scale_rewards=True` by default in `BTGRPOConfig` (per-group-std
+   advantage normalisation; parent GRPO default was False).
+
+**Motivation (per commit msg):** three post-mortem fixes for run2's
+blow-up, driven by the math of the actual objectives.
+
+**Outcome:** KL still produced ~1e8 per token (the `kl_ratio_clip`
+gate was only active when `num_iterations > 1` because `old_logps` are
+never computed otherwise). Even where bounded, **`β·KL` dominated the
+reward gradient ~1000:1** — the model only minimised KL and couldn't
+learn the reward signal. Starting correctness **crashed from 0.47
+(run1) to 0.18** — the earlier fork (0.35) also broke chain-of-thought
+coherence.
+
+---
+
+## run4 — `bae7590` — kill KL, restore fork, tighten clip
+
+**Changes:** `beta 0.04→0` (classic DeepSeek-GRPO: no KL term),
+`fork_frac 0.35→0.5` (restore CoT coherence), `epsilon 0.3→0.2`
+(PPO clip now the sole trust region), `sync_ref_model=False` (ref no
+longer used).
+
+**Motivation (per commit msg):** two lessons from run3 — (a) k3 KL on
+dLLMs is fundamentally unstable and the kl_ratio_clip gate doesn't fire
+with num_iter=1; (b) fork_frac=0.35 breaks CoT. Roll back both.
+
+**Config at this point (the baseline we inherited):** `num_iterations=1`,
+`beta=0`, `lr=1.5e-6`, `fork_frac=0.5`, `eps=0.2`, `lora_r=64`,
+`apply_divergent_mask=True`, `scale_rewards=False` (implicit; run3's
+default didn't stick on main).
+
+**Outcome after 1500+ steps:**
+
+- `reward` MA100 flat at ~1.05, `correctness` MA100 flat at ~0.20.
+- `loss` ≈ 0 and `grad_norm` small.
+- `frac_reward_zero_std` ~0.22 → ~22% of GRPO groups have no variance
+  and produce zero advantage.
+- `divergent_frac` ~0.21 → ~78% of completion tokens were zeroed by
+  the divergent mask, killing gradient on nearly everything.
+- `strict_format_reward_func` permanently 0.
+
+**Interpretation:** with `num_iterations=1` + `β=0`, the PPO clip
+region and the KL penalty both never activate; the loss reduces to the
+on-policy identity `-mean(advantage) ≈ 0`. The only learning signal is
+the gradient of `log π` times a sparse, masked advantage. With 78% of
+tokens masked out and 22% of groups producing zero-std advantage, the
+effective signal-to-noise ratio was far too low to move LoRA at
+`lr=1.5e-6`.
+
+---
+
+## run5 attempt 1 — "turn things back on"
+
+**Change:** `num_iterations=2, beta=0.02, lr=1e-5`.
+
+**Motivation:** if `β=0` and `num_iter=1` makes the loss identically 0
+on-policy, re-engage the PPO clip (by taking multiple policy steps
+between rollouts) and add a KL penalty so there is actually a loss
+surface to optimise.
+
+**Outcome:** **exploded in 7 steps.** `kl = 1.6e10`, `loss = 7e8`,
+`grad_norm = 5e9`. Killed.
+
+**Root cause:** TRL's KL is `k3 = exp(r) − 1 − r` where
+`r = logp_ref − logp_policy`. On dLLM masked positions, `|r|` can be
+50+ because both factors are unbounded log-probs of a discrete
+denoising step. `kl_ratio_clip=5.0` only clamps the `logp_ref - logp_old`
+term at rollout time; on iteration > 0 the ratio becomes
+`(logp_ref - logp_old) + (logp_old - logp_policy)` and the second term
+is uncapped → `kl` and the loss grow unbounded in one iteration.
+
+---
+
+## run5 attempt 2 — "tighten everything"
+
+**Change:** `lr=3e-6, kl_ratio_clip=2.0, scale_rewards=True`.
+
+**Motivation:** smaller lr + tighter KL clip should slow the blow-up
+enough to be usable.
+
+**Outcome:** still exploding. `grad_norm = 8e11` by step 10. Killed.
+
+**Lesson learned:** the KL / PPO re-engagement path on dLLMs is a dead
+end without a proper KL estimator that handles masked positions
+robustly. Rolled back.
+
+---
+
+## run5 (attempt 3) — stable baseline
+
+**Change (from run4):** `scale_rewards=True`, `lr=3e-6`,
+`apply_divergent_mask=False`, fix cross-rank inconsistency in
+`adv_scale` (all-reduce the mean divergent-frac).
+
+**Motivation:** keep `num_iter=1, β=0` to sidestep the KL issue, but
+unstick learning by (a) increasing lr 2×, (b) removing the
+78%-of-tokens mask so gradient can actually flow, and (c) normalising
+advantages so the scale isn't dominated by GSM8K's multi-modal reward.
+
+**Outcome:** **stable.** Loss ≈ -0.003, grad_norm ≈ 0.6, reward MA20 =
+1.19, correctness MA20 = 0.23. No explosion. But correctness still
+doesn't trend up meaningfully over 159 steps — signal is stable but
+sparse. This is the reference baseline for everything that follows.
+
+---
+
+## run6 — introduce learned `fork_frac` (ForkHead v1)
+
+**Change:** add a small Gaussian-policy ForkHead (sigmoid
+parameterisation over `[0.2, 0.8]`) trained with REINFORCE using
+`reward − EMA(reward)` as the advantage. `max_completion_length=266`.
+`fork_head_lr=1e-3`.
+
+**Motivation:** replace the hand-picked `fork_frac=0.5` with a
+per-prompt learnable choice. The original hypothesis was that different
+prompts want different shared-vs-divergent trade-offs.
+
+**Outcome:** `fork_frac_mean` **stuck at 0.500 exactly** for the
+entire run. Main GRPO metrics unchanged. Killed early.
+
+**Discovery:** `log_sigma` was moving, so backward and Adam clearly
+worked — but `proj.weight.grad` and `proj.bias.grad` were identically
+zero. See run7/run8 for the cause.
+
+---
+
+## run7 — ForkHead v2: fp32 + direct linear parameterisation
+
+**Changes:**
+
+1. Force ForkHead to fp32 (previously cast to bf16 with the main
+   model). Rationale: Adam moments at bf16 precision can underflow the
+   tiny per-step REINFORCE updates.
+2. Switch `μ = sigmoid(logit)·(hi−lo)+lo` → `μ = clamp(proj(h), lo, hi)`.
+   Rationale: the sigmoid has derivative 0.15 at the origin — every
+   unit of bias movement only moves μ by 0.15 units, attenuating
+   updates by ~7×. Direct linear gives 1:1.
+
+**Motivation:** both of these were cleanups based on the run6 no-learning
+symptom, **before** the real bug was identified.
+
+**Outcome:** `fork_frac_mean` **still exactly 0.5**. Neither fix helped,
+which narrowed the diagnosis to a gradient-flow bug rather than a
+precision / parameterisation bug.
+
+---
+
+## run8 — the `rsample()` bug
+
+**Change:** in `ForkHead.sample`, replace
+`raw = dist.rsample()` with `raw = dist.sample().detach()`.
+
+**Motivation:** REINFORCE requires the action to be a **constant**
+w.r.t. policy parameters — the gradient comes through `log π(a|s)`, not
+through `a`. With the reparameterised `rsample`, `raw = μ + σ·ε` so
+`log p(raw)` has two paths to μ: the direct one and the one through
+`raw`. For a Gaussian these have equal magnitude and opposite signs
+and cancel exactly. That is why `μ`'s gradient was zero but `σ`'s
+wasn't (the σ-path doesn't cancel because `raw` is multiplicative in σ).
+
+**Outcome:** μ finally **moves**. But too aggressively: step 2→3 jump
+from 0.5 to 0.8 (clamp upper bound) in a single REINFORCE step; μ then
+pinned at 0.8 for the rest of the run.
+
+---
+
+## run9 — try lowering lr
+
+**Change:** `fork_head_lr=1e-2` → `1e-3`.
+
+**Motivation:** the obvious hypothesis: updates are too large.
+
+**Outcome:** still saturates at 0.8 within ~3 steps. **lr alone
+cannot fix it.**
+
+**Diagnosis:** the problem is not the lr magnitude, it is the
+**dimensionality** of the weight vector. For a single `Linear(4096 → 1)`,
+Adam's first-step update has ~lr magnitude **per coordinate**; the
+dot-product of that update with the next (correlated) prompt's hidden
+state is `O(lr · √H · E[|h|])`. For lr=1e-3 and LLaDA scale
+`E[|h|]~0.5`, that's already 0.3 per step — enough to blow past the
+[0.2, 0.8] clamp in one or two updates, regardless of how small the
+lr is in absolute terms.
+
+---
+
+## run10 — ForkHead v3: LayerNorm + low-rank bottleneck
+
+**Change:** `Linear(4096 → 1)` replaced by
+`LayerNorm(4096) → Linear(4096 → 8) → Linear(8 → 1)`. Bottleneck
+weights init `N(0, 0.02²)`, `proj.weight=0`, `proj.bias=(lo+hi)/2`.
+
+**Motivation:** cap the effective weight dimension at 8 so the
+`√H · |h|` term becomes `√8 · 1 ≈ 3`, two orders of magnitude smaller.
+LayerNorm controls input scale so the bound actually holds.
+
+**Outcome:** **μ drifts smoothly.** Over the first 19 steps:
+0.500 → 0.506 → 0.519 → 0.541 → 0.572 → 0.601 → 0.679 → **0.775**.
+Per-prompt variation in the sampled action preserved (range
+0.245 – 0.799).
+
+**But:** μ eventually saturates at 0.8 and pins there. Over 122 steps,
+reward MA20 dropped to 0.69 and correctness to 0.13 — **worse than run5's
+stable baseline (reward 1.19, corr 0.23)**. The head clearly learned
+to pick high fork_frac consistently; high fork_frac = more shared
+rollout ⇒ less intra-group variance ⇒ more zero-std groups ⇒ weaker
+main-policy learning signal. This is concerning.
+
+**Cause, identified post-hoc:** the REINFORCE advantage `reward − EMA(reward)`
+mixes together two very different signals:
+
+1. "This fork_frac was good/bad for this prompt."
+2. "This prompt was easy/hard."
+
+Because easy GSM8K prompts give reward ≈ 2.5 and hard ones ≈ 0.1
+regardless of fork_frac, the *prompt difficulty* term totally dominates
+the *fork_frac quality* term. The head ends up learning to predict
+"am I looking at an easy-prompt direction?", then picking whatever
+fork_frac it happened to sample on past easy prompts. That's a
+**difficulty-detector**, not a fork_frac policy.
+
+---
+
+## run11 — actor-critic: per-prompt value baseline
+
+**Change:** add a `value_head: Linear(8 → 1)` sharing the 8-d
+bottleneck features. Train jointly:
+
+```
+advantage   = reward − V(h).detach()
+policy_loss = -log π(a|h) · advantage
+value_loss  = (V(h) − reward)²
+total       = policy_loss + value_loss
+```
+
+The EMA(reward) stat is kept for dashboard display only.
+
+**Motivation:** `V(h)` absorbs the prompt-difficulty component. The
+remaining advantage `r − V(h)` is the genuine signal "was this
+fork_frac choice above or below expectation **for this prompt**?" —
+which is what the policy head actually needs in order to learn
+conditional-on-prompt behaviour rather than a prompt-difficulty
+classifier.
+
+**Outcome (25 steps so far):**
+
+- `V(h)` is actively regressing toward observed reward
+  (0.0 → 0.94 over 25 steps, matching `reward` MA).
+- `value_loss` tracks reward variance (~1–3), as expected before V
+  converges.
+- `fork_frac_mean` still moved upward (0.5 → 0.76) — the actor hasn't
+  stabilised yet because V hasn't caught up. With more steps, once V
+  closely tracks E[r|prompt], advantages should oscillate around 0
+  and the actor should converge on the genuinely optimal fork_frac
+  per prompt rather than saturating at a single value.
+
+More data needed. The run10 → run11 delta is the theoretically
+principled fix; the proof is in whether reward / correctness stop
+declining and start matching or exceeding run5's baseline.
+
+---
+
+## Cross-cutting lessons
+
+1. **GRPO on dLLMs: keep it on-policy.** `num_iter=1, β=0` is the only
+   stable configuration we found. Re-engaging PPO clip or KL penalty
+   caused immediate blow-up because TRL's KL estimator is unbounded on
+   masked denoising steps.
+
+2. **`apply_divergent_mask=True` kills the signal.** With G=4 fork
+   siblings, ~78% of completion tokens get masked. Turning it off was
+   necessary to get any learning.
+
+3. **ForkHead / any auxiliary head should use a low-rank bottleneck +
+   LayerNorm.** A dense `Linear(H → 1)` REINFORCE head on H=4096 is
+   fundamentally unstable: a single Adam step produces updates whose
+   dot-product with the next prompt saturates whatever output clamp
+   you put on. Bottleneck = 8 works; bottleneck = 1 would also work
+   but kills per-prompt conditioning.
+
+4. **REINFORCE ≠ reparameterised sampling.** Use `.sample().detach()`
+   for the action. `rsample()` cancels the policy gradient w.r.t. the
+   distribution mean.
+
+5. **Always use a per-prompt value baseline** when the reward is
+   strongly prompt-dependent. A global EMA baseline makes any auxiliary
+   policy converge to a "difficulty detector" rather than a policy.
+
+6. **fp32 for tiny auxiliary heads.** Even if the main model is bf16,
+   Adam moments for tiny heads need fp32 to accumulate the small
+   REINFORCE updates without underflow / stalling.
+
+7. **Keep legacy default as a recoverable state.** ForkHead is
+   initialised so that μ(h) = (lo+hi)/2 exactly at step 0, i.e.
+   equivalent to the old hand-picked fork_frac=0.5. If the learned
+   head misbehaves, we can always drop `--learn_fork_frac True` and
+   recover the previous baseline verbatim.

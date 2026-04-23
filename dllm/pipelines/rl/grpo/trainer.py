@@ -251,9 +251,10 @@ class DiffuGRPOTrainer(GRPOTrainer):
             prompt_inputs["attention_mask"],
         )
 
-        if self.max_prompt_length is not None:
-            prompt_ids = prompt_ids[:, -self.max_prompt_length :]
-            prompt_mask = prompt_mask[:, -self.max_prompt_length :]
+        _max_prompt_length = getattr(self, "max_prompt_length", None)
+        if _max_prompt_length is not None:
+            prompt_ids = prompt_ids[:, -_max_prompt_length :]
+            prompt_mask = prompt_mask[:, -_max_prompt_length :]
             prompts_text = self.processing_class.batch_decode(
                 prompt_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False
             )

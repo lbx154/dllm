@@ -19,8 +19,6 @@
 runN: <一行变更摘要>
 
 <可选的多行细节>
-
-Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
 ```
 
 run1–run4 都有自己的 commit。run5–run11 是在同一个会话里连跑的、没按规矩 commit，所以被合成一个追补 commit `bb83e7f` 锁定 run11 的代码快照。
@@ -123,8 +121,7 @@ python dashboard.py --log .logs/btgrpo-run11.log --refresh 30
 
 ```bash
 git add -A
-git commit -m "run12: <delta>" \
-           -m "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
+git commit -m "run12: <delta>"
 bash scripts/launch_btgrpo_run12.sh
 ```
 

@@ -38,7 +38,7 @@ run to the exact source-tree state that produced it.
 | run9    | `c028d8b`     | lr back to 1e-3                                                                       |    19 |    0.010   |     1.31    |    0.25   |    0.50   |  0.768 | still saturates by step 3     |
 | run10   | `c028d8b`     | +LayerNorm + bottleneck 4096→8 ForkHead                                               |   122 |    0.002   |     0.69    |    0.13   |    0.44   |  0.800 | μ drifts smoothly then saturates; **reward drifts down** |
 | run11   | `c028d8b`     | +value-head baseline `V(h)` (actor–critic)                                            |   243 |    0.002   |     0.90    |    0.22   |    0.45   |  **0.800** | μ 瞬间饱和 clamp、base 学得极慢 |
-| run12   | **TBD**       | 深度诊断重启：`max_comp 266→512`, `num_iter 1→4`, `block 32→64`, `G/bs 4→8/8`, strict_format 权重 0，xmlcount 去负奖励，fork head **关** | 跑中 | | | | | | |
+| run12   | `0853e55`     | 深度诊断重启：`max_comp 266→512`, `num_iter 1→4`, `block 32→64`, `G/bs 4→8/8`, strict_format 权重 0，xmlcount 去负奖励，fork head **关** | 跑中 | | | | | | |
 
 > Going forward every new run **must** be preceded by a git commit so
 > the run ↔ code state mapping is recoverable from `git log`. run5–run11

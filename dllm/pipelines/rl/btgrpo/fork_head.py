@@ -24,8 +24,8 @@ class ForkHead(nn.Module):
     def __init__(self, hidden_size: int, lo: float = 0.2, hi: float = 0.8,
                  bottleneck: int = 8):
         super().__init__()
-        if not (0.0 < lo < hi < 1.0):
-            raise ValueError(f"need 0 < lo < hi < 1, got lo={lo}, hi={hi}")
+        if not (0.0 <= lo < hi <= 1.0):
+            raise ValueError(f"need 0 <= lo < hi <= 1, got lo={lo}, hi={hi}")
         self.lo, self.hi = lo, hi
         # LayerNorm + low-rank bottleneck keeps the projection update bounded:
         # without this, a single REINFORCE step on a 4096-d weight can swing
@@ -60,8 +60,12 @@ class ForkHead(nn.Module):
         return self.bottleneck(self.norm(h))
 
     def _mean_sigma(self, z: torch.Tensor):
-        raw_mean = self.proj(z).squeeze(-1)
-        mean = raw_mean.clamp(self.lo, self.hi)
+        # Intentionally do NOT clamp `raw_mean` to [lo, hi] here.
+        # Clamping the Gaussian *mean* severs dπ/dθ once raw_mean exits the
+        # interval — REINFORCE can never pull it back (see FORK_HEAD.md §5.5,
+        # diagnosed in run11). The action is clamped at sampling time instead,
+        # which keeps log_prob differentiable everywhere.
+        mean = self.proj(z).squeeze(-1)
         sigma = self.log_sigma.exp().clamp(0.05, 0.3)
         return mean, sigma
 
@@ -69,7 +73,8 @@ class ForkHead(nn.Module):
     def predict_mean(self, h: torch.Tensor) -> float:
         z = self._features(h)
         m, _ = self._mean_sigma(z)
-        return float(m.mean().item())
+        # Clamp only for reporting — internal policy parameter is unbounded.
+        return float(m.mean().clamp(self.lo, self.hi).item())
 
     def sample(self, h: torch.Tensor):
         """Sample one fork_frac from N(mean(h), sigma), clipped to [lo, hi].

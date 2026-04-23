@@ -38,7 +38,8 @@ run to the exact source-tree state that produced it.
 | run9    | `bb83e7f`     | lr back to 1e-3                                                                       |    19 |    0.010   |     1.31    |    0.25   |    0.50   |  0.768 | still saturates by step 3     |
 | run10   | `bb83e7f`     | +LayerNorm + bottleneck 4096→8 ForkHead                                               |   122 |    0.002   |     0.69    |    0.13   |    0.44   |  0.800 | μ drifts smoothly then saturates; **reward drifts down** |
 | run11   | `bb83e7f`     | +value-head baseline `V(h)` (actor–critic)                                            |   243 |    0.002   |     0.90    |    0.22   |    0.45   |  **0.800** | μ 瞬间饱和 clamp、base 学得极慢 |
-| run12   | `514731a`     | 深度诊断重启：`max_comp 266→512`, `num_iter 1→4`, `block 32→64`, `G/bs 4→8/8`, strict_format 权重 0，xmlcount 去负奖励，fork head **关** | 跑中 | | | | | | |
+| run12   | `514731a`     | 深度诊断重启：`max_comp 266→512`, `num_iter 1→4`, `block 32→64`, `G/bs 4→8/8`, strict_format 权重 0，xmlcount 去负奖励，fork head **关** |    14 | 尖峰波动 | ~0.6 | **~0.12** (σ=0.22)| 尖峰 1k-35k | 0.5 关 | xmlcount 正值 (+0.34)、截断 98%→<5%；但 num_iter=4 致 ratio 漂移、grad 尖峰；14 batch 太短、早停上 run13 |
+| run13   | **TBD**       | 重开学习型 fork head，范围 [0,1]、init 0.5、修 clamp-bug；num_iter 4→2                         |   跑中 | | | | | | |
 
 > Going forward every new run **must** be preceded by a git commit so
 > the run ↔ code state mapping is recoverable from `git log`. run5–run11
@@ -414,6 +415,98 @@ and the next suspects are `lora_r` and `lr`.
 
 ---
 
+## run12 — early-stopped at 14 batches, informative enough
+
+**What happened:** 14 real batches (56 logged steps with num_iter=4),
+then user called it ("这么垃圾").
+
+**What we learned:**
+
+1. **Reward-function fixes validated:**
+   - `xmlcount_reward_func/mean`: **-0.05 (run11) → +0.34 (run12)** — the
+     tail-penalty removal worked as designed; it's now a pure bonus.
+   - `completions/clipped_ratio`: **98% @ 266 (run11) → 0-15% @ 512
+     (run12)** — truncation is no longer eating our format/correctness
+     signal.
+
+2. **`num_iter=4` on dLLM caused asymmetric PPO blow-up.** Out of 14
+   batches, **3** (#1, #3, #5, #8) had `grad_norm` in the 1000-35000
+   range; the rest were 1-40. Pre-clip loss on those batches was in
+   the 200-230k range. Cause: TRL's PPO clip `min(r·A, clip(r,1±ε)·A)`
+   only bounds the objective when `A > 0` and `r` is large. For
+   `A < 0` with large `r` the unclipped branch wins and the loss
+   magnitude is unbounded. With `num_iter=4`, ratio `r = π_new/π_old`
+   accumulates drift across the 4 reuse steps — drift per step is
+   small, but for dLLM non-autoregressive log-prob sums over many
+   tokens, 4 steps is enough to make r wander to `exp(±5)` tail. The
+   global `max_grad_norm=1.0` prevents actual parameter explosion, so
+   the run is safe to watch but the gradient signal is dominated by
+   clip artefacts rather than real advantages.
+
+3. **`frac_reward_zero_std` averaged 0.72 even with G=8.** Hypothesis:
+   base policy is so weak that most hard GSM8K prompts produce 8/8
+   wrong answers → zero group variance → zero advantage. Raising G
+   helps less than expected; the fix is either a warmer base
+   (SFT first) or downsampling hard prompts.
+
+4. **Correctness at 14 batches (= 112 unique prompts) is pure prompt
+   noise.** Batch-wise corr ∈ {0, 0.03, 0.13, 0.25, 0.28, 0.75}. First-7
+   mean 0.174, last-7 mean 0.111, difference ~0.06 vs per-batch
+   σ≈0.22 (S/N = 0.27 — invisible). We don't have a trendable sample
+   after 14 batches.
+
+**Inherited fixes carried into run13** (validated): xmlcount patch,
+max_comp=512, block=64, G=8, per_device_bs=8, strict_format weight 0,
+scale_rewards=True, β=0, ε=0.2.
+
+---
+
+## run13 — learned fork_frac re-enabled, range [0,1], num_iter=4→2
+
+**Two independent changes:**
+
+### (a) Fork head re-enabled with widened range + clamp-bug fixed
+
+Config deltas: `--learn_fork_frac True`, `--fork_frac_min 0.0`,
+`--fork_frac_max 1.0` (was [0.2, 0.8] in run6-11 + disabled in run12).
+Bias init is `0.5·(lo+hi) = 0.5`, so step-0 behaviour is identical to
+hand-picked `fork_frac=0.5` in run12 — if the head misbehaves we
+degrade gracefully.
+
+Code fix in `fork_head.py::_mean_sigma` (the §5.5 bug): removed
+`mean = raw_mean.clamp(lo, hi)`. The mean is now the raw (unbounded)
+linear output; only the *sampled action* is clamped at use time. This
+keeps `dπ/dθ` alive everywhere — REINFORCE can pull the mean back in
+from either side regardless of saturation.
+
+Widening the range to [0, 1] has two purposes:
+- removes the "optimal frac is at the boundary" scenario (in [0.2, 0.8],
+  run11 consistently wanted to reach toward 1.0 but couldn't);
+- makes the clamp-severing failure mode (if fix regresses) visible
+  immediately — μ saturating at 0.999 is obviously broken.
+
+### (b) num_iterations 4 → 2
+
+Direct response to the grad_norm spikes observed in run12. Halving PPO
+reuse halves the expected ratio drift per batch while still giving 2×
+the gradient density of num_iter=1 (which run5-11 showed to be too
+starved to see learning on GSM8K in reasonable wall-clock).
+
+**What we're watching for (first 50 batches):**
+
+- `grad_norm` staying < 100 on > 90% of batches (was ~75% on run12)
+- `fork_frac_mean`: does μ *move* from 0.5? in which direction?
+  does it keep moving vs run11-style saturation?
+- `value_loss`: decreasing, tracks `reward` MA
+- `correctness` MA20 trending up from its ~0.12-0.22 run12/11 baseline
+
+**If it still doesn't learn at 200 batches** (MA50 corr < 0.25), next
+levers to toggle in order of cheapness: `lr 3e-6 → 1e-5`, then
+`lora_r 64 → 128` (matches run1), then reconsider whether SFT warmup
+is needed before RL can work from this base.
+
+---
+
 ## Cross-cutting lessons
 
 1. **GRPO on dLLMs: keep it on-policy.** `num_iter=1, β=0` is the only
@@ -476,3 +569,18 @@ and the next suspects are `lora_r` and `lr`.
     ≈ 0.9 mostly from Bernoulli sampling of 16 completions, not from
     optimisation. Trends need MA50+ to surface. Bigger G + bigger
     per-device batch is cheap variance reduction on B200-class GPUs.
+
+13. **TRL's PPO clip is asymmetric.** `min(r·A, clip(r, 1-ε, 1+ε)·A)`
+    bounds the objective only for `A > 0` with large `r`. For `A < 0`
+    with large `r`, the unclipped branch wins and the logged loss /
+    grad-norm can look catastrophic. On dLLMs with `num_iter > 2` the
+    ratio drift is enough to trigger this frequently. Mitigation:
+    (a) keep `num_iter ≤ 2`, or (b) rely on `max_grad_norm=1.0` to
+    bound actual parameter updates and accept that displayed loss is
+    cosmetic on spike batches.
+
+14. **`frac_reward_zero_std` is a policy-quality diagnostic.** High
+    values (>0.5) mean the group variance reducer can't help because
+    most groups have 8 identical rewards. This is mostly a sign that
+    the base is too weak for most prompts — warmup (SFT) or curriculum
+    (drop hardest 30% of prompts early) addresses it. G alone doesn't.

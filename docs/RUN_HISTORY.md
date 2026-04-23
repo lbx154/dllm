@@ -29,16 +29,16 @@ run to the exact source-tree state that produced it.
 | run2    | `14c1b63` | `num_iter 4→1, β 0.02→0.04, eps 0.5→0.3, lr 3e-6→1.5e-6, fork 0.5→0.35, lora_r 128→64, reward corr×5` |   n/a |       n/a |         n/a |       n/a |       n/a | 0.35   | **KL explosion (~1e9)**       |
 | run3    | `0be8638` | code fixes: `kl_ratio_clip=5.0`, 1/f_D advantage, `scale_rewards=True`                      |   n/a |       n/a |         n/a |  **0.18** |       n/a | 0.35   | KL still 1e8, β·KL dominates; corr collapses 0.47→0.18 |
 | run4    | `bae7590` | `β 0.04→0`, `fork 0.35→0.5`, `eps 0.3→0.2`, `sync_ref_model=False`                           |  1500+|        ~0 |      ~1.05  |    ~0.20  |      low  |   0.5  | **flat, not learning**        |
-| run5.a1 | `c028d8b`     | `num_iter=2, β=0.02, lr=1e-5, scale_rewards=F`                                        |     7 |    **7e8** |     0.88    |    0.17   |   **5e9** |   0.5  | **KL blew up — killed**       |
-| run5.a2 | `c028d8b`     | `num_iter=1, β=0, lr=3e-6, scale_rewards=T, kl_ratio_clip=2.0`                        |    10 |    **1e7** |     1.17    |    0.23   |   **8e11** |  0.5  | still exploding — killed      |
-| run5    | `c028d8b`     | same as a2 but `apply_divergent_mask=False`, fix per-rank `adv_scale`                  |   159 |   -0.003   |     1.19    |    0.23   |    0.62   |   0.5  | **stable; correctness flat**  |
-| run6    | `c028d8b`     | +learned fork_frac (sigmoid policy, lr=1e-3), `max_completion_length=266`              |    34 |   -0.003   |     0.85    |    0.16   |    0.43   | **0.500** | fork head not moving         |
-| run7    | `c028d8b`     | +fp32 ForkHead, direct linear param, lr=1e-2                                          |    17 |    0.019   |     1.29    |    0.25   |    0.59   | **0.500** | fork head **still** 0.5      |
-| run8    | `c028d8b`     | REINFORCE bug fix: `rsample` → `sample().detach()`                                    |    11 |    0.022   |     1.19    |    0.23   |    0.45   |  0.745 | μ moves, but **saturates 0.8** in 1 step |
-| run9    | `c028d8b`     | lr back to 1e-3                                                                       |    19 |    0.010   |     1.31    |    0.25   |    0.50   |  0.768 | still saturates by step 3     |
-| run10   | `c028d8b`     | +LayerNorm + bottleneck 4096→8 ForkHead                                               |   122 |    0.002   |     0.69    |    0.13   |    0.44   |  0.800 | μ drifts smoothly then saturates; **reward drifts down** |
-| run11   | `c028d8b`     | +value-head baseline `V(h)` (actor–critic)                                            |   243 |    0.002   |     0.90    |    0.22   |    0.45   |  **0.800** | μ 瞬间饱和 clamp、base 学得极慢 |
-| run12   | `0853e55`     | 深度诊断重启：`max_comp 266→512`, `num_iter 1→4`, `block 32→64`, `G/bs 4→8/8`, strict_format 权重 0，xmlcount 去负奖励，fork head **关** | 跑中 | | | | | | |
+| run5.a1 | `bb83e7f`     | `num_iter=2, β=0.02, lr=1e-5, scale_rewards=F`                                        |     7 |    **7e8** |     0.88    |    0.17   |   **5e9** |   0.5  | **KL blew up — killed**       |
+| run5.a2 | `bb83e7f`     | `num_iter=1, β=0, lr=3e-6, scale_rewards=T, kl_ratio_clip=2.0`                        |    10 |    **1e7** |     1.17    |    0.23   |   **8e11** |  0.5  | still exploding — killed      |
+| run5    | `bb83e7f`     | same as a2 but `apply_divergent_mask=False`, fix per-rank `adv_scale`                  |   159 |   -0.003   |     1.19    |    0.23   |    0.62   |   0.5  | **stable; correctness flat**  |
+| run6    | `bb83e7f`     | +learned fork_frac (sigmoid policy, lr=1e-3), `max_completion_length=266`              |    34 |   -0.003   |     0.85    |    0.16   |    0.43   | **0.500** | fork head not moving         |
+| run7    | `bb83e7f`     | +fp32 ForkHead, direct linear param, lr=1e-2                                          |    17 |    0.019   |     1.29    |    0.25   |    0.59   | **0.500** | fork head **still** 0.5      |
+| run8    | `bb83e7f`     | REINFORCE bug fix: `rsample` → `sample().detach()`                                    |    11 |    0.022   |     1.19    |    0.23   |    0.45   |  0.745 | μ moves, but **saturates 0.8** in 1 step |
+| run9    | `bb83e7f`     | lr back to 1e-3                                                                       |    19 |    0.010   |     1.31    |    0.25   |    0.50   |  0.768 | still saturates by step 3     |
+| run10   | `bb83e7f`     | +LayerNorm + bottleneck 4096→8 ForkHead                                               |   122 |    0.002   |     0.69    |    0.13   |    0.44   |  0.800 | μ drifts smoothly then saturates; **reward drifts down** |
+| run11   | `bb83e7f`     | +value-head baseline `V(h)` (actor–critic)                                            |   243 |    0.002   |     0.90    |    0.22   |    0.45   |  **0.800** | μ 瞬间饱和 clamp、base 学得极慢 |
+| run12   | `514731a`     | 深度诊断重启：`max_comp 266→512`, `num_iter 1→4`, `block 32→64`, `G/bs 4→8/8`, strict_format 权重 0，xmlcount 去负奖励，fork head **关** | 跑中 | | | | | | |
 
 > Going forward every new run **must** be preceded by a git commit so
 > the run ↔ code state mapping is recoverable from `git log`. run5–run11

@@ -30,21 +30,23 @@ class ForkHead(nn.Module):
         # LayerNorm + low-rank bottleneck keeps the projection update bounded:
         # without this, a single REINFORCE step on a 4096-d weight can swing
         # the next-prompt projection by O(lr * sqrt(H) * |h|) ~ several units,
-        # immediately saturating the [lo, hi] clamp. With bottleneck=8 and
+        # immediately saturating whatever bound you put on. With bottleneck=8 and
         # post-LN |h_norm|~1, max single-step swing is O(lr * 8) ~ tiny.
         self.norm = nn.LayerNorm(hidden_size)
         self.bottleneck = nn.Linear(hidden_size, bottleneck)
         self.proj = nn.Linear(bottleneck, 1)
         # Value head: predicts E[reward | prompt], acts as a per-prompt baseline
-        # for REINFORCE. Without it, advantage = reward - global_EMA is biased
-        # by prompt difficulty (easy prompts get high reward regardless of
-        # fork_frac → head drifts toward "what I picked on easy prompts" rather
-        # than "best fork_frac for this prompt"). See FORK_HEAD.md for details.
+        # for REINFORCE AND as a difficulty feature feeding back into the mean
+        # (run14 change — see FORK_HEAD.md §6). Hard prompt (low V) -> early
+        # fork; easy prompt (high V) -> late fork. Coupling coeff initialised
+        # at +1 so behaviour at V=0 is exactly sigmoid(bias)=0.5 (matches the
+        # legacy fixed fork_frac=0.5 default).
         self.value_head = nn.Linear(bottleneck, 1)
-        # Init: zero the projection weights so initial mean is determined
-        # solely by proj.bias = midpoint (matches old fixed default 0.5).
+        self.value_coupling = nn.Parameter(torch.tensor(1.0))
+        # Init: zero proj.weight so all initial variation is carried by the
+        # value-head coupling. proj.bias = 0 => sigmoid(0) = 0.5 at init.
         nn.init.zeros_(self.proj.weight)
-        nn.init.constant_(self.proj.bias, 0.5 * (lo + hi))
+        nn.init.zeros_(self.proj.bias)
         # Value head starts at 0; MSE on reward will pull it toward E[reward].
         nn.init.zeros_(self.value_head.weight)
         nn.init.zeros_(self.value_head.bias)
@@ -52,20 +54,34 @@ class ForkHead(nn.Module):
         # once proj.weight starts moving, but stays bounded.
         nn.init.normal_(self.bottleneck.weight, std=0.02)
         nn.init.zeros_(self.bottleneck.bias)
-        # Fixed-ish exploration sigma in raw (pre-clip) Gaussian space.
-        # log_sigma is learnable but clamped at use time.
+        # Fixed-ish exploration sigma in raw (pre-sigmoid) Gaussian space.
         self.log_sigma = nn.Parameter(torch.tensor(-1.6))  # sigma ≈ 0.2
 
     def _features(self, h: torch.Tensor) -> torch.Tensor:
         return self.bottleneck(self.norm(h))
 
     def _mean_sigma(self, z: torch.Tensor):
-        # Intentionally do NOT clamp `raw_mean` to [lo, hi] here.
-        # Clamping the Gaussian *mean* severs dπ/dθ once raw_mean exits the
-        # interval — REINFORCE can never pull it back (see FORK_HEAD.md §5.5,
-        # diagnosed in run11). The action is clamped at sampling time instead,
-        # which keeps log_prob differentiable everywhere.
-        mean = self.proj(z).squeeze(-1)
+        # run14 parameterisation:
+        #   raw = proj(z) + value_coupling * V(z).detach()
+        #   mean = lo + (hi-lo) * sigmoid(raw)
+        # Properties:
+        # (a) mean is bounded in [lo, hi] by construction — no clamp, no
+        #     gradient severance (fixes FORK_HEAD.md §5.5).
+        # (b) gradient of sigmoid is smooth (shrinks but never zero),
+        #     giving graceful saturation instead of the run11 dead-end.
+        # (c) V(z) is the value-head prediction of E[reward|prompt]; it
+        #     also serves as a difficulty proxy. detach() keeps the fork
+        #     REINFORCE loss from training V (which is trained separately
+        #     via MSE on realised reward in trainer.py).
+        # (d) positive `value_coupling` bakes the user's hypothesis
+        #     (FORK_HEAD.md §6) into the architecture: high V (easy
+        #     prompt) -> higher raw -> higher mean -> fork LATE; low V
+        #     (hard prompt) -> lower mean -> fork EARLY. REINFORCE still
+        #     has freedom to flip the sign of `value_coupling` if data
+        #     disagrees, but starts with this prior.
+        v = self.value_head(z).squeeze(-1).detach()
+        raw = self.proj(z).squeeze(-1) + self.value_coupling * v
+        mean = self.lo + (self.hi - self.lo) * torch.sigmoid(raw)
         sigma = self.log_sigma.exp().clamp(0.05, 0.3)
         return mean, sigma
 
@@ -73,8 +89,8 @@ class ForkHead(nn.Module):
     def predict_mean(self, h: torch.Tensor) -> float:
         z = self._features(h)
         m, _ = self._mean_sigma(z)
-        # Clamp only for reporting — internal policy parameter is unbounded.
-        return float(m.mean().clamp(self.lo, self.hi).item())
+        # mean is already in [lo, hi] via sigmoid
+        return float(m.mean().item())
 
     def sample(self, h: torch.Tensor):
         """Sample one fork_frac from N(mean(h), sigma), clipped to [lo, hi].

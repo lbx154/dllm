@@ -273,6 +273,91 @@ as long as advantages average near zero, which actor-critic ensures.
 This bug will be fixed in whatever run re-enables the fork head (run12
 keeps it disabled).
 
+### 5.6 Bug: unbounded linear mean drifts past `hi` (run13)
+
+**Symptom (run13, 17 batches):** with §5.5's fix (`mean = raw_mean`,
+no clamp) applied and range widened to [0, 1], μ drifted **upward**
+monotonically and exited the advertised [0, 1] interval by batch 12:
+
+```
+batch    raw_mean     sampled fork_frac
+   1       0.500           0.539
+   5       0.640           0.520
+   9       0.791           0.780
+  12       1.014           >1.0   (action clamp kicked in at 0.999)
+  14       1.114           0.999
+  17       1.507           0.999
+```
+
+**Cause:** removing the clamp *did* keep the gradient alive (§5.5), but
+replaced a "μ saturates at 0.8" failure with a "μ drifts to ∞, sampled
+action saturates at 0.999" failure — the underlying dynamical issue
+(REINFORCE monotonically pushing μ toward whatever direction the
+initial random sample deviated) is unchanged. With no boundedness
+*inside* the gradient path, there's nothing to slow down the drift.
+
+**Fix (run14, §5.7):** replace naked linear with a bounded
+parameterisation — sigmoid.
+
+### 5.7 The run14 design: sigmoid + value-head feature
+
+Current fork head (see `fork_head.py::_mean_sigma`):
+
+```python
+v    = self.value_head(z).squeeze(-1).detach()
+raw  = self.proj(z).squeeze(-1) + self.value_coupling * v
+mean = self.lo + (self.hi - self.lo) * torch.sigmoid(raw)
+```
+
+Why each piece:
+
+- `torch.sigmoid`: maps R → (0, 1), so `mean` is bounded in [lo, hi]
+  by construction — no clamp, no gradient severance. Gradient magnitude
+  at mean = μ is `(hi - lo) · μ · (1 - μ)` — max at μ=0.5 (≈0.25 on
+  full range), shrinks but never hits zero at extremes. This is the
+  right inductive bias: exploration slows as you approach the boundary
+  instead of dying.
+
+- `proj(z)`: the per-prompt learnable component; starts at 0
+  (`nn.init.zeros_(proj.weight)`, `zeros_(proj.bias)`) so at init all
+  variation is carried by the value-head feature.
+
+- `+ value_coupling * V(z).detach()`: the **structural encoding of the
+  user's hypothesis** — fork_frac should correlate inversely with
+  difficulty.  V(z) is the value-head's prediction of E[reward|prompt],
+  which for a reasonably calibrated V is a difficulty proxy
+  (high V = easy prompt = model gets it right often).  With
+  `value_coupling > 0`:
+
+  ```
+  easy prompt (V high) -> raw high -> mean high  -> fork LATE
+                          (most tokens are shared formatting /
+                           brackets / formulae — nothing to explore)
+
+  hard prompt (V low)  -> raw low  -> mean low   -> fork EARLY
+                          (branches need to diverge early to explore
+                           different reasoning chains)
+  ```
+
+  `value_coupling` is an `nn.Parameter` initialised at +1. If the data
+  eventually says the sign should be different, REINFORCE can push it
+  through zero. `V` is detached here so the fork REINFORCE loss
+  doesn't train V (V is trained purely by `MSE(V, reward)` in the
+  main value-loss term).
+
+- init invariant: with `proj.weight=0, proj.bias=0, V(z)≈0`,
+  `sigmoid(0) = 0.5` at step 0, so the default behaviour is identical
+  to the hand-picked `fork_frac=0.5` legacy — a safe fallback if the
+  head misbehaves.
+
+What the three "clamp generations" look like in one table:
+
+| generation | mean formula | failure mode if any |
+| --- | --- | --- |
+| v1 (run6-11) | `clamp(raw, lo, hi)` | gradient severs at boundary (§5.5) |
+| v2 (run13) | `raw` (no clamp) | drift to ∞; action-clamp saturates (§5.6) |
+| v3 (run14) | `lo + (hi-lo)·sigmoid(raw)` | tested — see RUN_HISTORY.md §run14 |
+
 ## 6. Logged metrics
 
 During training the following series are written to the usual TRL

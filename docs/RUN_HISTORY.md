@@ -39,7 +39,8 @@ run to the exact source-tree state that produced it.
 | run10   | `bb83e7f`     | +LayerNorm + bottleneck 4096→8 ForkHead                                               |   122 |    0.002   |     0.69    |    0.13   |    0.44   |  0.800 | μ drifts smoothly then saturates; **reward drifts down** |
 | run11   | `bb83e7f`     | +value-head baseline `V(h)` (actor–critic)                                            |   243 |    0.002   |     0.90    |    0.22   |    0.45   |  **0.800** | μ 瞬间饱和 clamp、base 学得极慢 |
 | run12   | `514731a`     | 深度诊断重启：`max_comp 266→512`, `num_iter 1→4`, `block 32→64`, `G/bs 4→8/8`, strict_format 权重 0，xmlcount 去负奖励，fork head **关** |    14 | 尖峰波动 | ~0.6 | **~0.12** (σ=0.22)| 尖峰 1k-35k | 0.5 关 | xmlcount 正值 (+0.34)、截断 98%→<5%；但 num_iter=4 致 ratio 漂移、grad 尖峰；14 batch 太短、早停上 run13 |
-| run13   | `8e0e861`     | 重开学习型 fork head，范围 [0,1]、init 0.5、修 clamp-bug；num_iter 4→2                         |   跑中 | | | | | | |
+| run13   | `8e0e861`     | 重开学习型 fork head，范围 [0,1]、init 0.5、修 clamp-bug；num_iter 4→2                         |    17 | 尖峰 | ~1.2 | ~0.18 | 尖峰 4k-81k | **1.507 (越界)** | μ 改用 naked linear 后漂出 [0,1]、采样饱和 0.999，收敛到"所有题晚分支"错误极值 |
+| run14   | **TBD**       | fork head v3：sigmoid 有界 + V(h) 作为难度特征（hard→早分支、easy→晚分支）；num_iter 2→1         |   跑中 | | | | | | |
 
 > Going forward every new run **must** be preceded by a git commit so
 > the run ↔ code state mapping is recoverable from `git log`. run5–run11
@@ -409,13 +410,103 @@ we can safely keep `β=0` going forward.
 - no NaN / grad blowups (if multi-iter PPO + bf16 dLLM has any latent
   instability, that's a new finding)
 
-If run12 looks like another run5 (corr flat at ~0.22), we've eliminated
-`num_iter`, block_size, G, reward weights, completion length as causes,
-and the next suspects are `lora_r` and `lr`.
+If it still doesn't learn at 200 batches** (MA50 corr < 0.25), next
+levers to toggle in order of cheapness: `lr 3e-6 → 1e-5`, then
+`lora_r 64 → 128` (matches run1), then reconsider whether SFT warmup
+is needed before RL can work from this base.
 
 ---
 
-## run12 — early-stopped at 14 batches, informative enough
+## run13 — early-stopped at 17 batches after μ drifted out of [0,1]
+
+Re-enabled learned fork head, widened range to [0, 1], removed mean
+clamp (§5.5 fix). 17 batches, then user called it.
+
+**What we learned:**
+
+1. **Removing the mean clamp (§5.5 fix) traded one failure for another
+   (§5.6):** without the clamp, `raw_mean` drifted monotonically — no
+   longer glued at the boundary but now **walking off to ∞**. By batch
+   12 `fork_frac_mean = 1.01`, by batch 17 `1.51`. Sampled action
+   saturated at the upper clamp 0.999 from batch 7 onwards. The
+   environment only ever saw `fork_frac ≈ 0.999` (fork LATE for
+   everything).
+
+2. **num_iter=2 still produced PPO asymmetric-clip blow-ups on the
+   main policy** — 4 out of 17 batches had pre-clip main-policy `loss`
+   ≥ 441 and `grad_norm` ≥ 3900 (peak: batch 11 with `loss=4240`,
+   `grad_norm=81000`). Halving reuse count from 4 → 2 did not help
+   enough; PPO clip's asymmetry (unbounded for A<0 with large ratio)
+   bites anyway on dLLMs' many-token log-prob sums.
+
+3. **The "fork late for everything" convergence is exactly opposite of
+   the correct answer for GSM8K.** Hard problems (which dominate the
+   training signal via negative advantages) need EARLY forking to
+   explore different reasoning paths — shared-prefix phase only helps
+   if the prefix is genuinely prompt-dependent formatting/boilerplate,
+   which hard problems have less of.
+
+**User's hypothesis, adopted for run14:** `fork_frac` should correlate
+INVERSELY with prompt difficulty. Hard prompt → fork early (low
+fork_frac). Easy prompt → fork late (high fork_frac). Rationale: easy
+prompts have more "public" content (brackets, punctuation, math
+formula syntax) that is shared across completions anyway; hard prompts
+need independent chains of reasoning and so benefit from diversity
+from the start.
+
+---
+
+## run14 — difficulty-aware fork head with sigmoid parameterisation
+
+Two independent changes:
+
+### (a) fork head v3: sigmoid + value-head feature
+
+`fork_head.py::_mean_sigma` (full redesign — see FORK_HEAD.md §5.7):
+
+```python
+v    = self.value_head(z).squeeze(-1).detach()
+raw  = self.proj(z).squeeze(-1) + self.value_coupling * v
+mean = self.lo + (self.hi - self.lo) * torch.sigmoid(raw)
+```
+
+- `sigmoid(raw)` bounds mean in [lo, hi] **by construction**, fixing
+  both §5.5 (clamp severs gradient) and §5.6 (no bound → drift to ∞).
+  Gradient at mean=μ is `(hi-lo)·μ·(1-μ)`, shrinks but never zero.
+- `value_coupling · V(z).detach()`: V is the value-head's prediction
+  of `E[reward|prompt]` — a reasonable difficulty proxy. Coupling
+  coefficient is a learnable scalar, initialised at **+1** to bake in
+  the user's hypothesis. Detached so fork REINFORCE doesn't train V.
+- `proj.weight = 0`, `proj.bias = 0` at init → step-0 behaviour
+  `mean = sigmoid(0) = 0.5`, identical to the legacy hand-picked
+  `fork_frac=0.5`. Graceful fallback if the head misbehaves.
+
+### (b) num_iterations: 2 → 1
+
+Direct response to run13's main-policy PPO spikes. `num_iter=1` has
+been our baseline since run5 — stable on dLLMs. The only motive for
+num_iter>1 was gradient density, but run13 showed the price (ratio
+drift → unbounded-for-A<0 loss) is too high on dLLMs' many-token
+log_prob. We now have 2× the data-level gradient density via G=8 +
+per_device_bs=8, which should substitute.
+
+**What we're watching (first 50 batches):**
+
+- `fork_frac_mean` should now stay in [0, 1] **strictly** — it's
+  bounded by sigmoid.
+- `value_coupling` (new logged scalar?): does it move? stays ≈+1?
+- **Per-prompt variation**: is the head differentiating between
+  prompts based on V, as intended? Hard to log directly but
+  `fork_frac` sample series should show more variance across
+  consecutive batches than run13 (which quickly homogenised).
+- Main `loss` + `grad_norm`: should stay < 100 on > 95% of batches
+  now that PPO reuse is gone.
+- `correctness` MA20: we need ≥ 0.25 by batch 50 to call this an
+  improvement over run5's flat 0.22 baseline.
+
+---
+
+## Cross-cutting lessons
 
 **What happened:** 14 real batches (56 logged steps with num_iter=4),
 then user called it ("这么垃圾").
@@ -458,52 +549,6 @@ then user called it ("这么垃圾").
 **Inherited fixes carried into run13** (validated): xmlcount patch,
 max_comp=512, block=64, G=8, per_device_bs=8, strict_format weight 0,
 scale_rewards=True, β=0, ε=0.2.
-
----
-
-## run13 — learned fork_frac re-enabled, range [0,1], num_iter=4→2
-
-**Two independent changes:**
-
-### (a) Fork head re-enabled with widened range + clamp-bug fixed
-
-Config deltas: `--learn_fork_frac True`, `--fork_frac_min 0.0`,
-`--fork_frac_max 1.0` (was [0.2, 0.8] in run6-11 + disabled in run12).
-Bias init is `0.5·(lo+hi) = 0.5`, so step-0 behaviour is identical to
-hand-picked `fork_frac=0.5` in run12 — if the head misbehaves we
-degrade gracefully.
-
-Code fix in `fork_head.py::_mean_sigma` (the §5.5 bug): removed
-`mean = raw_mean.clamp(lo, hi)`. The mean is now the raw (unbounded)
-linear output; only the *sampled action* is clamped at use time. This
-keeps `dπ/dθ` alive everywhere — REINFORCE can pull the mean back in
-from either side regardless of saturation.
-
-Widening the range to [0, 1] has two purposes:
-- removes the "optimal frac is at the boundary" scenario (in [0.2, 0.8],
-  run11 consistently wanted to reach toward 1.0 but couldn't);
-- makes the clamp-severing failure mode (if fix regresses) visible
-  immediately — μ saturating at 0.999 is obviously broken.
-
-### (b) num_iterations 4 → 2
-
-Direct response to the grad_norm spikes observed in run12. Halving PPO
-reuse halves the expected ratio drift per batch while still giving 2×
-the gradient density of num_iter=1 (which run5-11 showed to be too
-starved to see learning on GSM8K in reasonable wall-clock).
-
-**What we're watching for (first 50 batches):**
-
-- `grad_norm` staying < 100 on > 90% of batches (was ~75% on run12)
-- `fork_frac_mean`: does μ *move* from 0.5? in which direction?
-  does it keep moving vs run11-style saturation?
-- `value_loss`: decreasing, tracks `reward` MA
-- `correctness` MA20 trending up from its ~0.12-0.22 run12/11 baseline
-
-**If it still doesn't learn at 200 batches** (MA50 corr < 0.25), next
-levers to toggle in order of cheapness: `lr 3e-6 → 1e-5`, then
-`lora_r 64 → 128` (matches run1), then reconsider whether SFT warmup
-is needed before RL can work from this base.
 
 ---
 
@@ -584,3 +629,20 @@ is needed before RL can work from this base.
     most groups have 8 identical rewards. This is mostly a sign that
     the base is too weak for most prompts — warmup (SFT) or curriculum
     (drop hardest 30% of prompts early) addresses it. G alone doesn't.
+
+15. **Bounded policy parameters need a bounded parameterisation, not
+    a clamp.** The progression clamp(raw,lo,hi) → raw (unbounded) →
+    sigmoid(raw)·(hi-lo)+lo was a painful two-run learning loop. Rule:
+    if a policy parameter must live in [lo, hi], use a smooth invertible
+    map from R to (lo, hi) (sigmoid / tanh), not clamp. Clamp is fine
+    for the sampled action (where gradient doesn't need to flow back),
+    but never for the distribution parameter itself.
+
+16. **Structural priors beat REINFORCE regularisation.** For two runs
+    we tried to let REINFORCE discover the right μ(h) from scratch with
+    only the per-prompt V(h) baseline as signal. The head never got
+    enough gradient to differentiate prompts by difficulty. Baking the
+    hypothesis directly into the architecture (run14:
+    `raw_mean = proj(h) + coupling · V(h).detach()`) makes the correct
+    behaviour the default at init and lets REINFORCE fine-tune from
+    there rather than discover from scratch.

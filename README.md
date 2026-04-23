@@ -1,131 +1,124 @@
-# BT-GRPO on LLaDA-8B — Experiment Log
+# BT-GRPO on LLaDA-8B — 实验日志
 
-This fork turns the upstream `dllm` repo into a working lab for
-**Branching-Trajectory GRPO** (BT-GRPO) on `LLaDA-8B-Instruct` + LoRA,
-trained on GSM8K. This README is the living log of every training run
-we've done, what was changed, and what happened. Deep-dive docs live
-alongside the code:
+本仓库是 `dllm` 的 fork，专门用来做 **Branching-Trajectory GRPO
+(BT-GRPO)** 在 `LLaDA-8B-Instruct` + LoRA 上的实验，数据集是 GSM8K。
+这个 README 就是实验的主账本：每一次 run 改了什么、为什么改、结果如何。
+想看细节的话：
 
-- [`dllm/pipelines/rl/btgrpo/RUN_HISTORY.md`](dllm/pipelines/rl/btgrpo/RUN_HISTORY.md) — full per-run notes (run1 → run11)
-- [`dllm/pipelines/rl/btgrpo/FORK_HEAD.md`](dllm/pipelines/rl/btgrpo/FORK_HEAD.md) — learned `fork_frac` head design + bug diary
+- [`docs/BT_GRPO.md`](docs/BT_GRPO.md) — BT-GRPO 算法本身的设计/理论
+- [`docs/RUN_HISTORY.md`](docs/RUN_HISTORY.md) — run1 → run11 的逐次详细记录
+- [`docs/FORK_HEAD.md`](docs/FORK_HEAD.md) — 可学习 `fork_frac` head 的设计文档与 bug 日记
 
 ---
 
-## Workflow rule (from run12 onward)
+## 工作流约定（run12 起强制生效）
 
-**Every training restart is preceded by a git commit.** The commit is
-the archival record of the source-tree state for that run; without it
-we lose the run ↔ code mapping. Format:
+**每次开新 run 之前先 commit 一次代码。** commit 就是这次 run 对应的源码快照；没有 commit 的话，run 和代码版本的对应关系就丢了。格式：
 
 ```
-runN: <one-line delta summary>
+runN: <一行变更摘要>
 
-<optional multi-line detail>
+<可选的多行细节>
 
 Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
 ```
 
-run1–run4 follow this rule already. run5–run11 were done in one session
-without commits and were collapsed into a single retroactive commit
-`c028d8b` capturing the run11 code state.
+run1–run4 都有自己的 commit。run5–run11 是在同一个会话里连跑的、没按规矩 commit，所以被合成一个追补 commit `c028d8b` 锁定 run11 的代码快照。
 
 ---
 
-## Hardware / config baseline
+## 硬件 / 基线配置
 
-- 8× A100-40G, single node.
-- Model: `LLaDA-8B-Instruct` + LoRA (`r=64`, `alpha=32` from run2 onward).
-- Data: GSM8K with reasoning prompt; `num_generations G=4`,
-  `per_device_train_batch_size=4` → **1 fork-group per GPU**.
-- Reward weights: `[xmlcount 0.25, soft_format 0.25, strict_format 0.25,
-  int 0.25, correctness 5.0]` from run2 onward.
-- Generation: 64 denoising steps, `max_completion_length=266` from run6.
+- 单机 **8× B200**
+- 模型：`LLaDA-8B-Instruct` + LoRA（从 run2 起固定 `r=64, α=32`）
+- 数据：GSM8K + reasoning prompt；`num_generations G=4`，`per_device_train_batch_size=4` → **每卡恰好 1 个 fork 组**
+- Reward 权重（run2 起）：`[xmlcount 0.25, soft_format 0.25, strict_format 0.25, int 0.25, correctness 5.0]`
+- 采样：64 denoising steps，`max_completion_length=266`（run6 起）
 
 ---
 
-## Run summary
+## Run 总览
 
-All rewards/correctness are MA20 at end of run. "Corr" =
-`rewards/correctness_reward_func/mean` in `[0, 2]`. "fork μ" is the
-mean of the head's sampled `fork_frac` (always 0.5 for fixed-fork runs).
+下表中 reward / correctness 都是该 run 结束前 MA20。"Corr" =
+`rewards/correctness_reward_func/mean`，取值 `[0, 2]`。"fork μ" 是 head
+采样出的 `fork_frac` 均值（固定 fork 的 run 恒为 0.5）。
 
-| Run     | Commit        | Δ from previous                                                                                   | Steps | MA20 loss | MA20 reward | MA20 corr | MA20 grad | fork μ | Outcome                                |
-| ------- | ------------- | ------------------------------------------------------------------------------------------------- | ----: | --------: | ----------: | --------: | --------: | -----: | -------------------------------------- |
-| run1    | `85576bc`     | initial BT-GRPO launch: `num_iter=4, β=0.02, lr=3e-6, eps=0.5, fork=0.5, lora_r=128`               |   n/a |       n/a |         n/a |  **0.47** |       n/a |    0.5 | early corr OK, grad blowups            |
-| run2    | `14c1b63`     | `num_iter 4→1, β 0.02→0.04, eps 0.5→0.3, lr 3e-6→1.5e-6, fork 0.5→0.35, lora_r 128→64, corr×5`     |   n/a |       n/a |         n/a |       n/a |       n/a |   0.35 | **KL explosion ~1e9**                  |
-| run3    | `0be8638`     | code fixes: `kl_ratio_clip=5.0`, 1/f_D advantage, `scale_rewards=True`                             |   n/a |       n/a |         n/a |  **0.18** |       n/a |   0.35 | KL still 1e8, β·KL dominates 1000:1    |
-| run4    | `bae7590`     | `β 0.04→0`, `fork 0.35→0.5`, `eps 0.3→0.2`, `sync_ref_model=False`                                 | 1500+ |        ~0 |      ~1.05  |    ~0.20  |       low |    0.5 | **flat, not learning**                 |
-| run5.a1 | _(c028d8b)_   | `num_iter=2, β=0.02, lr=1e-5, scale_rewards=F`                                                     |     7 |   **7e8** |      0.88   |    0.17   |   **5e9** |    0.5 | **KL blew up — killed**                |
-| run5.a2 | _(c028d8b)_   | `num_iter=1, β=0, lr=3e-6, scale_rewards=T, kl_ratio_clip=2.0`                                     |    10 |   **1e7** |      1.17   |    0.23   | **8e11**  |    0.5 | still exploding — killed               |
-| run5    | _(c028d8b)_   | same as a2 but `apply_divergent_mask=False`, fix per-rank `adv_scale`                              |   159 |   -0.003  |      1.19   |    0.23   |     0.62  |    0.5 | **stable; correctness flat**           |
-| run6    | _(c028d8b)_   | +learned fork_frac (sigmoid policy, lr=1e-3), `max_completion_length=266`                          |    34 |   -0.003  |      0.85   |    0.16   |     0.43  | **0.500** | fork head not moving                |
-| run7    | _(c028d8b)_   | +fp32 ForkHead, direct linear param, lr=1e-2                                                       |    17 |    0.019  |      1.29   |    0.25   |     0.59  | **0.500** | fork head **still** 0.5             |
-| run8    | _(c028d8b)_   | REINFORCE bug fix: `rsample` → `sample().detach()`                                                 |    11 |    0.022  |      1.19   |    0.23   |     0.45  |  0.745 | μ moves, **saturates 0.8** in 1 step   |
-| run9    | _(c028d8b)_   | lr back to 1e-3                                                                                    |    19 |    0.010  |      1.31   |    0.25   |     0.50  |  0.768 | still saturates by step 3              |
-| run10   | _(c028d8b)_   | +LayerNorm + bottleneck 4096→8 ForkHead                                                            |   122 |    0.002  |      0.69   |    0.13   |     0.44  |  0.800 | μ drifts smoothly then saturates; reward **drifts down** |
-| run11   | _(c028d8b)_   | +value-head baseline `V(h)` (actor-critic replaces EMA baseline)                                   |    25 |   -0.004  |      0.89   |    0.17   |     0.44  |  0.762 | early; V(h) learning; observing        |
+| Run     | Commit        | Δ（相对上一 run）                                                                                  | Steps | MA20 loss | MA20 reward | MA20 corr | MA20 grad | fork μ | 结果                                            |
+| ------- | ------------- | ------------------------------------------------------------------------------------------------- | ----: | --------: | ----------: | --------: | --------: | -----: | ----------------------------------------------- |
+| run1    | `85576bc`     | 初版 BT-GRPO：`num_iter=4, β=0.02, lr=3e-6, eps=0.5, fork=0.5, lora_r=128`                          |   n/a |       n/a |         n/a |  **0.47** |       n/a |    0.5 | 起手 corr 还行，但 grad 会炸                    |
+| run2    | `14c1b63`     | `num_iter 4→1, β 0.02→0.04, eps 0.5→0.3, lr 3e-6→1.5e-6, fork 0.5→0.35, lora_r 128→64, corr×5`     |   n/a |       n/a |         n/a |       n/a |       n/a |   0.35 | **KL 爆到 ~1e9**                                |
+| run3    | `0be8638`     | 代码侧修补：`kl_ratio_clip=5.0`、`1/f_D` 优势校正、`scale_rewards=True`                             |   n/a |       n/a |         n/a |  **0.18** |       n/a |   0.35 | KL 仍 1e8，β·KL 压过 reward 1000:1              |
+| run4    | `bae7590`     | `β 0.04→0`, `fork 0.35→0.5`, `eps 0.3→0.2`, `sync_ref_model=False`                                 | 1500+ |        ~0 |      ~1.05  |    ~0.20  |       low |    0.5 | **学不动，指标全平**                            |
+| run5.a1 | _(c028d8b)_   | `num_iter=2, β=0.02, lr=1e-5, scale_rewards=F`                                                     |     7 |   **7e8** |      0.88   |    0.17   |   **5e9** |    0.5 | **KL 爆 — 当场杀**                              |
+| run5.a2 | _(c028d8b)_   | `num_iter=1, β=0, lr=3e-6, scale_rewards=T, kl_ratio_clip=2.0`                                     |    10 |   **1e7** |      1.17   |    0.23   | **8e11**  |    0.5 | 继续炸 — 杀                                     |
+| run5    | _(c028d8b)_   | 同 a2，但 `apply_divergent_mask=False`，修 per-rank `adv_scale`                                     |   159 |   -0.003  |      1.19   |    0.23   |     0.62  |    0.5 | **稳了；但 correctness 仍平**                   |
+| run6    | _(c028d8b)_   | 加可学习 fork_frac（sigmoid policy, lr=1e-3）、`max_completion_length=266`                          |    34 |   -0.003  |      0.85   |    0.16   |     0.43  | **0.500** | head 不动                                   |
+| run7    | _(c028d8b)_   | fp32 ForkHead、改成直接线性参数化、lr=1e-2                                                          |    17 |    0.019  |      1.29   |    0.25   |     0.59  | **0.500** | head 还是死在 0.5                           |
+| run8    | _(c028d8b)_   | REINFORCE bug：`rsample` → `sample().detach()`                                                     |    11 |    0.022  |      1.19   |    0.23   |     0.45  |  0.745 | μ 动了，但**一步就顶到 0.8**                    |
+| run9    | _(c028d8b)_   | lr 回到 1e-3                                                                                       |    19 |    0.010  |      1.31   |    0.25   |     0.50  |  0.768 | 仍在第 3 步饱和                                 |
+| run10   | _(c028d8b)_   | 加 LayerNorm + bottleneck 4096→8 的 ForkHead                                                       |   122 |    0.002  |      0.69   |    0.13   |     0.44  |  0.800 | μ 平滑上升最终饱和；**reward 反而下滑**         |
+| run11   | _(c028d8b)_   | 加 value head `V(h)`，把 EMA baseline 换成 actor-critic                                             |    25 |   -0.004  |      0.89   |    0.17   |     0.44  |  0.762 | 早期；V(h) 在学，观察中                         |
 
-See `RUN_HISTORY.md` for the per-run write-up (motivation, config,
-diagnosis) and `FORK_HEAD.md` for the fork-head bug diary.
-
----
-
-## Cross-cutting lessons
-
-1. **`num_iterations=1, β=0` is the only stable GRPO setting on dLLMs.**
-   The k3 KL estimator (`exp(r) − 1 − r`) overflows on masked positions
-   where `|log π_ref − log π_policy|` can reach 50+, producing KL ~1e9.
-   The PPO ratio is also always 1 on the step where `old_logps` were
-   collected. PPO clip is the sole trust region.
-2. **`apply_divergent_mask=True` kills learning.** It zeroed ~78% of
-   completion-token gradients in run4. Leave it off.
-3. **Per-rank `adv_scale` must be all-reduced.** Otherwise each rank
-   sees a different advantage scale and gradients don't align at the
-   reduce step — silently introduces bias.
-4. **REINFORCE wants `sample().detach()`, not `rsample()`.** `rsample`
-   puts a pathwise gradient through the mean that cancels the
-   `log π · A` term analytically; head never updates (runs 6–7).
-5. **Dense `Linear(4096→1)` as a REINFORCE head is intrinsically
-   unstable.** One Adam step's dot-product with the next prompt is
-   `O(lr · √H · |h|)`, which saturates the clamp regardless of lr.
-   Use a LayerNorm + low-rank bottleneck `4096→8→1` (run10+).
-6. **Global EMA baseline ⇒ difficulty-classifier failure mode.**
-   `A = r − EMA(r)` makes the head learn "is this prompt easy?" rather
-   than "what fork_frac is best for this prompt?". Use a per-prompt
-   value head `V(h)` (actor-critic, run11+).
-7. **Keep aux heads in fp32.** bf16 weights + Adam moments underflow.
-8. **`strict_format_reward_func` is permanently 0** in our log — 12.5%
-   of the reward-weight budget is wasted. Consider dropping or rewriting.
+per-run 的完整动机 / 配置 / 诊断见 `docs/RUN_HISTORY.md`，fork head 的
+bug 日记见 `docs/FORK_HEAD.md`。
 
 ---
 
-## Repo layout (what matters)
+## 贯穿全程的经验教训
+
+1. **dLLM 上只有 `num_iterations=1, β=0` 这一档 GRPO 是稳的。**
+   k3 KL 估计 `exp(r) − 1 − r` 在 mask 位上会遇到 `|log π_ref − log π_policy|`
+   50+ 的情况，直接 overflow 成 ~1e9；而且第一步的 `old_logps` 还没有，
+   PPO ratio 恒为 1，多 iter 也没意义。trust region 完全靠 PPO clip。
+2. **`apply_divergent_mask=True` 会直接扼杀学习。** run4 里 ~78% 的
+   completion-token 梯度被它清零了。留 False。
+3. **per-rank `adv_scale` 必须 all-reduce。** 不 reduce 的话每卡看到的
+   scale 不一样，在梯度 reduce 那步会静默引入偏差。
+4. **REINFORCE 要用 `sample().detach()`，不能 `rsample()`。** `rsample`
+   会把 pathwise 梯度穿过均值，和 `log π · A` 项在解析上相消 → head
+   永远不动（run6、run7）。
+5. **用 `Linear(4096→1)` 做 REINFORCE head 本质上就是不稳的。** 单步
+   Adam 和下一个 prompt 的点积是 `O(lr · √H · |h|)` 量级，无论 lr 多小
+   都会顶到 clamp 饱和。必须加 LayerNorm + 低秩 bottleneck `4096→8→1`
+   （run10 起）。
+6. **用全局 EMA 做 baseline → head 变成"难度分类器"。** `A = r − EMA(r)`
+   等于让 head 去学"这题容不容易"，而不是"对这条 prompt，fork_frac 调多少最好"。
+   必须用 per-prompt value head `V(h)`（actor-critic，run11 起）。
+7. **辅助 head 要保持 fp32。** bf16 权重配 Adam moment 会 underflow。
+8. **`strict_format_reward_func` 永远是 0。** 现在有 12.5% 的 reward
+   权重被它白占，可以考虑丢掉或重写。
+
+---
+
+## 仓库关键路径
 
 ```
 dllm/pipelines/rl/btgrpo/
-  trainer.py         BT-GRPO trainer; ForkHead integration, actor-critic update
-  fork_head.py       learned per-prompt fork_frac head (LN + 4096→8→{π, V}, fp32)
-  FORK_HEAD.md       head design + bug diary
-  RUN_HISTORY.md     full per-run notes
+  trainer.py         BT-GRPO 训练器；接入 ForkHead、实现 actor-critic 更新
+  fork_head.py       可学习的 per-prompt fork_frac head（LN + 4096→8→{π, V}，fp32）
+docs/
+  BT_GRPO.md         BT-GRPO 算法本身的设计文档（理论/定位/算法）
+  FORK_HEAD.md       fork head 的设计文档 + bug 日记
+  RUN_HISTORY.md     逐 run 的完整记录
 examples/rl/grpo/llada/
-  train_btgrpo.py    entry point (TrlParser → BTGRPOConfig)
+  train_btgrpo.py    入口（TrlParser → BTGRPOConfig）
 scripts/
-  launch_btgrpo_run{5..11}.sh   per-run launchers
-dashboard.py         live training dashboard (10 panels)
-monitor.py           lightweight log tail helper
+  launch_btgrpo_run{5..11}.sh   历次 run 的启动脚本
+dashboard.py         训练实时看板（10 个面板）
+monitor.py           日志尾随小工具
 ```
 
 ---
 
-## Running
+## 使用
 
-**Monitor a live run:**
+**监控一条在跑的 run：**
 
 ```bash
 python dashboard.py --log .logs/btgrpo-run11.log --refresh 30
 ```
 
-**Launch a new run (pre-commit required):**
+**开一条新 run（必须先 commit）：**
 
 ```bash
 git add -A
@@ -134,5 +127,5 @@ git commit -m "run12: <delta>" \
 bash scripts/launch_btgrpo_run12.sh
 ```
 
-The launcher emits to `.logs/btgrpo-run<N>.log`. Archived old logs sit
-in `.logs/archive/`.
+启动脚本会把日志写到 `.logs/btgrpo-run<N>.log`，旧日志统一归档到
+`.logs/archive/`。

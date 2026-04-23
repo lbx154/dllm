@@ -10,6 +10,16 @@ def extract_xml_answer(text: str) -> str:
 
 
 def count_xml(text) -> float:
+    """XML structure reward.
+
+    Originally this function also subtracted a small penalty for any text
+    appearing AFTER the closing </answer> tag (`count -= len(tail)*0.001`).
+    In practice LLaDA fills a fixed-length window and keeps generating
+    garbage after </answer>, so those penalties routinely pushed the mean
+    of this reward NEGATIVE and counter-acted the correctness signal on
+    completions that *did* close the answer tag correctly (see run11
+    diagnosis in docs/RUN_HISTORY.md). The penalty was removed in run12.
+    """
     count = 0.0
     if text.count("<reasoning>\n") == 1:
         count += 0.125
@@ -17,10 +27,8 @@ def count_xml(text) -> float:
         count += 0.125
     if text.count("\n<answer>\n") == 1:
         count += 0.125
-        count -= len(text.split("\n</answer>\n")[-1]) * 0.001
     if text.count("\n</answer>") == 1:
         count += 0.125
-        count -= (len(text.split("\n</answer>")[-1]) - 1) * 0.001
     return count
 
 

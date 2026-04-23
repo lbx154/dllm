@@ -222,6 +222,57 @@ This is plain actor–critic with the prompt embedding as state, the only
 subtlety being that we share the 8-d bottleneck feature between the
 policy and value heads.
 
+### 5.5 Bug: `clamp` on the policy mean severs the gradient
+
+**Symptom (run11, 243 steps):** with actor-critic in place, `μ(h)` still
+drifted upward to 0.800 by step ~10 and then stayed **exactly** at the
+upper clamp boundary for the remaining 230+ steps. `log_sigma` also
+barely moved. `V(h)` tracked reward correctly, `fork_advantage`
+oscillated with mean ~+0.19 and swings of ±1.9, but μ didn't budge.
+
+**Cause:** the old implementation did
+
+```python
+raw_mean = self.proj(z).squeeze(-1)
+mean     = raw_mean.clamp(self.lo, self.hi)     # ← the culprit
+dist     = Normal(mean, sigma)
+```
+
+Once `raw_mean > hi`, the clamp produces `mean = hi` (a constant w.r.t.
+`raw_mean`), so `∂mean/∂raw_mean = 0` and the gradient from
+`log π(a|h)` cannot flow back to `proj.weight` / `proj.bias`. The actor
+can **never** pull μ back inside `[lo, hi]` once it exits, regardless of
+what advantages the value head is computing.
+
+Why run10 and earlier didn't catch this: with the old EMA baseline,
+advantages stayed systematically positive as long as reward was positive,
+so there was no mechanism pushing μ *down* and the clamp-gradient issue
+wasn't observable. Actor-critic fixed the sign of the advantage (run11
+has plenty of negative advantages), which then exposed the lack of a
+return path.
+
+**Fix:** never clamp the distribution parameter; only clamp the final
+sampled action:
+
+```python
+raw_mean = self.proj(z).squeeze(-1)             # unbounded
+dist     = Normal(raw_mean, sigma)
+raw      = dist.sample().detach()
+action   = raw.clamp(self.lo + 1e-3, self.hi - 1e-3)
+```
+
+`log_prob` stays differentiable w.r.t. `raw_mean` everywhere, so even if
+μ drifts past `hi` temporarily, a negative-advantage batch will reduce
+`raw_mean` on the next step.
+
+To keep `raw_mean` from drifting to infinity (and `log_prob` to useful
+scale), optionally add a small L2 on `raw_mean` to the policy loss. In
+practice the REINFORCE signal itself is strong enough to regularise it
+as long as advantages average near zero, which actor-critic ensures.
+
+This bug will be fixed in whatever run re-enables the fork head (run12
+keeps it disabled).
+
 ## 6. Logged metrics
 
 During training the following series are written to the usual TRL

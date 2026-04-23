@@ -29,15 +29,16 @@ run to the exact source-tree state that produced it.
 | run2    | `14c1b63` | `num_iter 4→1, β 0.02→0.04, eps 0.5→0.3, lr 3e-6→1.5e-6, fork 0.5→0.35, lora_r 128→64, reward corr×5` |   n/a |       n/a |         n/a |       n/a |       n/a | 0.35   | **KL explosion (~1e9)**       |
 | run3    | `0be8638` | code fixes: `kl_ratio_clip=5.0`, 1/f_D advantage, `scale_rewards=True`                      |   n/a |       n/a |         n/a |  **0.18** |       n/a | 0.35   | KL still 1e8, β·KL dominates; corr collapses 0.47→0.18 |
 | run4    | `bae7590` | `β 0.04→0`, `fork 0.35→0.5`, `eps 0.3→0.2`, `sync_ref_model=False`                           |  1500+|        ~0 |      ~1.05  |    ~0.20  |      low  |   0.5  | **flat, not learning**        |
-| run5.a1 | _uncommitted_ | `num_iter=2, β=0.02, lr=1e-5, scale_rewards=F`                                        |     7 |    **7e8** |     0.88    |    0.17   |   **5e9** |   0.5  | **KL blew up — killed**       |
-| run5.a2 | _uncommitted_ | `num_iter=1, β=0, lr=3e-6, scale_rewards=T, kl_ratio_clip=2.0`                        |    10 |    **1e7** |     1.17    |    0.23   |   **8e11** |  0.5  | still exploding — killed      |
-| run5    | _uncommitted_ | same as a2 but `apply_divergent_mask=False`, fix per-rank `adv_scale`                  |   159 |   -0.003   |     1.19    |    0.23   |    0.62   |   0.5  | **stable; correctness flat**  |
-| run6    | _uncommitted_ | +learned fork_frac (sigmoid policy, lr=1e-3), `max_completion_length=266`              |    34 |   -0.003   |     0.85    |    0.16   |    0.43   | **0.500** | fork head not moving         |
-| run7    | _uncommitted_ | +fp32 ForkHead, direct linear param, lr=1e-2                                          |    17 |    0.019   |     1.29    |    0.25   |    0.59   | **0.500** | fork head **still** 0.5      |
-| run8    | _uncommitted_ | REINFORCE bug fix: `rsample` → `sample().detach()`                                    |    11 |    0.022   |     1.19    |    0.23   |    0.45   |  0.745 | μ moves, but **saturates 0.8** in 1 step |
-| run9    | _uncommitted_ | lr back to 1e-3                                                                       |    19 |    0.010   |     1.31    |    0.25   |    0.50   |  0.768 | still saturates by step 3     |
-| run10   | _uncommitted_ | +LayerNorm + bottleneck 4096→8 ForkHead                                               |   122 |    0.002   |     0.69    |    0.13   |    0.44   |  0.800 | μ drifts smoothly then saturates; **reward drifts down** |
-| run11   | _uncommitted_ | +value-head baseline `V(h)` (actor–critic)                                            |    25 |   -0.004   |     0.89    |    0.17   |    0.44   |  0.762 | early; V learning             |
+| run5.a1 | `c028d8b`     | `num_iter=2, β=0.02, lr=1e-5, scale_rewards=F`                                        |     7 |    **7e8** |     0.88    |    0.17   |   **5e9** |   0.5  | **KL blew up — killed**       |
+| run5.a2 | `c028d8b`     | `num_iter=1, β=0, lr=3e-6, scale_rewards=T, kl_ratio_clip=2.0`                        |    10 |    **1e7** |     1.17    |    0.23   |   **8e11** |  0.5  | still exploding — killed      |
+| run5    | `c028d8b`     | same as a2 but `apply_divergent_mask=False`, fix per-rank `adv_scale`                  |   159 |   -0.003   |     1.19    |    0.23   |    0.62   |   0.5  | **stable; correctness flat**  |
+| run6    | `c028d8b`     | +learned fork_frac (sigmoid policy, lr=1e-3), `max_completion_length=266`              |    34 |   -0.003   |     0.85    |    0.16   |    0.43   | **0.500** | fork head not moving         |
+| run7    | `c028d8b`     | +fp32 ForkHead, direct linear param, lr=1e-2                                          |    17 |    0.019   |     1.29    |    0.25   |    0.59   | **0.500** | fork head **still** 0.5      |
+| run8    | `c028d8b`     | REINFORCE bug fix: `rsample` → `sample().detach()`                                    |    11 |    0.022   |     1.19    |    0.23   |    0.45   |  0.745 | μ moves, but **saturates 0.8** in 1 step |
+| run9    | `c028d8b`     | lr back to 1e-3                                                                       |    19 |    0.010   |     1.31    |    0.25   |    0.50   |  0.768 | still saturates by step 3     |
+| run10   | `c028d8b`     | +LayerNorm + bottleneck 4096→8 ForkHead                                               |   122 |    0.002   |     0.69    |    0.13   |    0.44   |  0.800 | μ drifts smoothly then saturates; **reward drifts down** |
+| run11   | `c028d8b`     | +value-head baseline `V(h)` (actor–critic)                                            |   243 |    0.002   |     0.90    |    0.22   |    0.45   |  **0.800** | μ 瞬间饱和 clamp、base 学得极慢 |
+| run12   | **TBD**       | 深度诊断重启：`max_comp 266→512`, `num_iter 1→4`, `block 32→64`, `G/bs 4→8/8`, strict_format 权重 0，xmlcount 去负奖励，fork head **关** | 跑中 | | | | | | |
 
 > Going forward every new run **must** be preceded by a git commit so
 > the run ↔ code state mapping is recoverable from `git log`. run5–run11
@@ -337,21 +338,79 @@ which is what the policy head actually needs in order to learn
 conditional-on-prompt behaviour rather than a prompt-difficulty
 classifier.
 
-**Outcome (25 steps so far):**
+**Outcome (243 steps, post-mortem):**
 
-- `V(h)` is actively regressing toward observed reward
-  (0.0 → 0.94 over 25 steps, matching `reward` MA).
-- `value_loss` tracks reward variance (~1–3), as expected before V
-  converges.
-- `fork_frac_mean` still moved upward (0.5 → 0.76) — the actor hasn't
-  stabilised yet because V hasn't caught up. With more steps, once V
-  closely tracks E[r|prompt], advantages should oscillate around 0
-  and the actor should converge on the genuinely optimal fork_frac
-  per prompt rather than saturating at a single value.
+- `V(h)` regressed toward observed reward cleanly; MA100 gap stayed ≤ 0.1.
+- `fork_frac_mean` hit 0.800 (the upper clamp) by step ~10 and **never
+  came back**. `fork_sigma` also stuck at its init 0.20.
+- `reward` MA100 = 0.90, `correctness` MA20 = 0.22.  The run **did
+  improve** (first-third corr 0.154 → last-third 0.181, Δ=+0.027), but
+  at this slope you'd need 1000+ more steps to reach run1's 0.47.
+- Per-step S/N = (last − first) MA5 / σ(MA5) = **−0.50** — the trend
+  is buried in the noise floor, which is why the dashboard looked
+  "no stable growth".
 
-More data needed. The run10 → run11 delta is the theoretically
-principled fix; the proof is in whether reward / correctness stop
-declining and start matching or exceeding run5's baseline.
+**Three things run11 exposed that run6–10 hadn't:**
+
+1. **ForkHead `mean` clamp kills gradient.** `mean = clamp(raw_mean,
+   lo, hi)` sends `∂mean/∂raw_mean = 0` once `raw_mean` exits `[lo,
+   hi]`. Even with V(h) pulling advantages toward 0, `proj.weight/bias`
+   can't move because the computational graph is severed. This is a
+   5th entry in the `FORK_HEAD.md` bug diary.
+2. **98% of completions hit the 266-token cap.** `max_completion_length
+   = 266` is too tight for GSM8K CoT + XML tags. Generations get
+   truncated mid-`</answer>`, breaking the format regex and silently
+   zeroing correctness on completions that *did* solve the math.
+3. **`xmlcount_reward_func` had a negative tail-penalty.**
+   `count -= len(text_after_</answer>) * 0.001` went NEGATIVE on most
+   completions (LLaDA fills a fixed window). Anti-correlated with
+   correctness (longer correct answers got more penalty). Its mean was
+   −0.05 throughout run11.
+
+These three turn a sympathetic reading of run11 ("V is learning, need
+more steps") into a structural one: **the base-GRPO signal has been
+starved by reward-function pathologies + truncation + too few gradient
+updates per batch + too-small G**. The fork-head story is secondary.
+
+---
+
+## run12 — deep-diagnosis restart after the run11 post-mortem
+
+**Changes (all at once; see `scripts/launch_btgrpo_run12.sh`):**
+
+| change | from | to | why |
+| --- | --- | --- | --- |
+| `max_completion_length` | 266 | **512** | run11 hit the cap on 98% of steps; B200 has the memory |
+| `num_iterations` | 1 | **4** | per-batch only got 1 gradient update; run1 (which reached corr 0.47) had 4. `β=0` stays, so no KL-estimator explosion |
+| `block_size` | 32 | **64** | halve outer sequential-block count for B200 parallelism (9 → 5 blocks) |
+| `num_generations` (G) | 4 | **8** | 22% of groups had zero-std advantage; bigger G makes group baselines meaningful |
+| `per_device_train_batch_size` | 4 | **8** | keep `per_device_bs == G` so each GPU holds exactly 1 fork group. Doubles unique prompts/step → σ per step roughly /√2 |
+| `reward_weights` strict_format | 0.25 | **0.0** | `strict_format_reward_func` was permanently 0 — 12.5% dead weight |
+| `count_xml` code | tail penalty | **removed** | penalty was anti-correlated with correctness; ran negative in run11 |
+| `learn_fork_frac` | True | **False** | disabled until base-GRPO is actually teaching the model; re-enable once the base shows clear correctness growth |
+
+**What this does NOT change (intentionally, to isolate variables):**
+
+- `lr=3e-6`, `beta=0`, `epsilon=0.2`, `lora_r=64, α=32`, `scale_rewards=True`,
+  `apply_divergent_mask=False`, `fork_frac=0.5`, `sync_ref_model=False`,
+  `steps=64` (denoising), `p_mask_prompt=0.15`, `seed=42`.
+
+**Hypothesis being tested:** run1's corr=0.47 came from the combination
+of `num_iter=4` + `lora_r=128` + (some lucky fork/β settings). We never
+tried `num_iter=4` with `β=0`. If run12 converges toward corr ≥ 0.4
+over ~1000 steps, the "num_iter=1 was starving us" hypothesis wins and
+we can safely keep `β=0` going forward.
+
+**Success criteria (MA100):**
+
+- `correctness ≥ 0.35` by step 500 (vs run5's ~0.23 at step 159)
+- `reward` trending upward monotonically on MA100 (not flat or drifting)
+- no NaN / grad blowups (if multi-iter PPO + bf16 dLLM has any latent
+  instability, that's a new finding)
+
+If run12 looks like another run5 (corr flat at ~0.22), we've eliminated
+`num_iter`, block_size, G, reward weights, completion length as causes,
+and the next suspects are `lora_r` and `lr`.
 
 ---
 
@@ -390,3 +449,30 @@ declining and start matching or exceeding run5's baseline.
    equivalent to the old hand-picked fork_frac=0.5. If the learned
    head misbehaves, we can always drop `--learn_fork_frac True` and
    recover the previous baseline verbatim.
+
+8. **`clamp` on a policy mean severs the gradient.** `mean = clamp(raw,
+   lo, hi)` has `∂mean/∂raw = 0` outside `[lo, hi]`. If the raw
+   parameterisation drifts past the boundary once, REINFORCE can never
+   pull it back. Clamp only the sampled action, never the distribution
+   parameter itself (§5.5 in FORK_HEAD.md).
+
+9. **Always check if you're hitting `max_completion_length`.** run11
+   discovery: 98% of completions truncated at the cap. Truncation
+   destroys format rewards + answer parsers → the measured correctness
+   floor is artificially low even when the underlying policy is fine.
+   When in doubt, double the cap.
+
+10. **Reward functions can silently go negative.** `xmlcount`'s
+    "penalty for tail text after </answer>" made its mean hover at
+    −0.05, cancelling correctness gains. Always eyeball per-component
+    reward means early in a run; any persistently-negative component
+    is suspect.
+
+11. **Watch for dead-weight reward components.** `strict_format` was
+    permanently 0 in every run 4–11 — 12.5% of reward-weight budget
+    was just padding. Drop or rewrite any reward that never fires.
+
+12. **Binary correctness × G=4 = huge sampling noise.** Per-step σ(reward)
+    ≈ 0.9 mostly from Bernoulli sampling of 16 completions, not from
+    optimisation. Trends need MA50+ to surface. Bigger G + bigger
+    per-device batch is cheap variance reduction on B200-class GPUs.

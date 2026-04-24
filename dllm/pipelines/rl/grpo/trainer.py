@@ -607,6 +607,13 @@ class DiffuGRPOTrainer(GRPOTrainer):
         # Compute from completion_mask and aggregate across processes.
         local_num = completion_mask.sum()
         num_items_in_batch = self.accelerator.reduce(local_num.to(device), reduction="sum")
+        # Safety floor: if filter_zero_*_groups masks out EVERY token in the
+        # batch, num_items_in_batch becomes 0 and the PPO loss divides by zero,
+        # producing NaN gradients that silently corrupt LoRA weights (after
+        # which every completion saturates max_completion_length). Clamp to 1
+        # so the (numerator=0)/(denominator=1)=0 case is well-defined and
+        # training simply skips this step.
+        num_items_in_batch = torch.clamp(num_items_in_batch, min=1)
 
         return {
             "prompt_ids": prompt_ids,

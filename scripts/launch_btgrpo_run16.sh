@@ -84,7 +84,7 @@ accelerate launch \
     --scale_rewards False \
     --filter_zero_std_groups True \
     --filter_zero_correct_groups True \
-    --log_rollouts_every 100 \
+    --log_rollouts_every 25 \
     --sync_ref_model False \
     --logging_steps 1 --save_steps 256 --save_total_limit 3 \
     --seed 42 \

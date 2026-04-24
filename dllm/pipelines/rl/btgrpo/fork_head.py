@@ -120,5 +120,10 @@ class ForkHead(nn.Module):
         # have equal magnitude and opposite signs).
         raw = dist.sample().detach()
         log_prob = dist.log_prob(raw)
+        # Defensive: if upstream produced NaN in mean/sigma (e.g. from a blown-up
+        # REINFORCE gradient), nan_to_num -> midpoint so the sampler still gets a
+        # valid scalar instead of crashing. log_prob may still be NaN; that's
+        # fine because fork_head's optimiser update is guarded in trainer.
+        raw = torch.nan_to_num(raw, nan=(self.lo + self.hi) / 2.0)
         action = raw.clamp(self.lo + 1e-3, self.hi - 1e-3)
         return float(action.item()), log_prob, float(mean.detach().item()), value

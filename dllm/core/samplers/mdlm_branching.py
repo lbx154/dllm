@@ -230,7 +230,7 @@ class BranchingMDLMSampler(MDLMSampler):
         eos_id = self.tokenizer.eos_token_id
 
         assert num_branches >= 1
-        assert 0.0 < fork_frac < 1.0
+        assert 0.0 <= fork_frac <= 1.0, f"fork_frac must be in [0, 1], got {fork_frac!r}"
 
         # --- Normalise inputs ----------------------------------------------------
         if right_shift_logits:

@@ -59,7 +59,7 @@ run1–run4 都有自己的 commit。run5–run11 是在同一个会话里连跑
 | run12   | `514731a`     | 深度诊断：`max_comp 266→512`、`num_iter 1→4`、`block 32→64`、`G/bs 4→8`、strict_format 权重 0、xmlcount 去负奖励、**fork head 关** |    14 | 尖峰波动 |  ~0.6 |   ~0.12 | 尖峰 1k–35k | 0.5 关 | xmlcount 转正、截断修复，但 num_iter=4 致 ratio 漂移、14 batch 早停 |
 | run13   | `8e0e861`     | 重开学习型 fork head，范围 [0,1]、init 0.5、修 clamp-bug；num_iter 4→2                         |    17 | 尖峰 | ~1.2 | ~0.18 | 4k–81k | **1.507 (越界)** | naked linear 飘出 [0,1]，采样饱和 0.999，收敛到"所有题晚分支"错误极值 |
 | run14   | `b21ca7b`     | fork head v3：sigmoid 有界 + V(h) 难度特征（hard→早分支、easy→晚分支）；num_iter 2→1            |   608 |     ~0.00 |     ~0.5（噪声） |    ~0.02 |      1.1 |   0.53 | reward 看起来是噪声：`frac_reward_zero_std≈0.7`，correctness 多数 batch=0；entropy 0.30→0.45 上升，长度 200→150 下降 — 典型格式噪声梯度放大 |
-| run15   | `ac072a4`     | **杀噪声梯度**：修 `scale_rewards` 静默 bug（`"none"` 是 truthy，之前一直在除 std 放大噪声）；加 `filter_zero_std_groups` + `filter_zero_correct_groups` 把无信号 group 的 advantage 和 completion_mask 同时清零；加 `log_rollouts_every=100` sanity-check 解析器 |   跑中 |         — |           — |         — |         — |      — | —                                                |
+| run15   | `341b71f`     | **杀噪声梯度**：修 `scale_rewards` 静默 bug（`"none"` 是 truthy，之前一直在除 std 放大噪声）；加 `filter_zero_std_groups` + `filter_zero_correct_groups` 把无信号 group 的 advantage 和 completion_mask 同时清零；加 `log_rollouts_every=100` sanity-check 解析器 |   跑中 |         — |           — |         — |         — |      — | —                                                |
 
 per-run 的完整动机 / 配置 / 诊断见 `docs/RUN_HISTORY.md`，fork head 的
 bug 日记见 `docs/FORK_HEAD.md`。

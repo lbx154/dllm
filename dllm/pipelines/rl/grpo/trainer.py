@@ -501,17 +501,20 @@ class DiffuGRPOTrainer(GRPOTrainer):
             filter_mask = filter_mask | is_correct_std_zero.repeat_interleave(
                 self.num_generations, dim=0
             )
-        if filter_mask.any():
-            advantages = advantages * (~filter_mask).to(advantages.dtype)
-            completion_mask = completion_mask * (~filter_mask).to(
-                completion_mask.dtype
-            ).unsqueeze(1)
-            attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
-
+        # Note: rewards/advantages are GLOBAL (gathered across world), completion_mask
+        # is LOCAL (per-rank). Slice filter_mask to the local view before masking mask.
         process_slice = slice(
             self.accelerator.process_index * len(prompts),
             (self.accelerator.process_index + 1) * len(prompts),
         )
+        if filter_mask.any():
+            advantages = advantages * (~filter_mask).to(advantages.dtype)
+            local_filter_mask = filter_mask[process_slice]
+            completion_mask = completion_mask * (~local_filter_mask).to(
+                completion_mask.dtype
+            ).unsqueeze(1)
+            attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
+
         all_process_advantages = advantages.clone()
         advantages = advantages[process_slice]
 

@@ -75,7 +75,7 @@ accelerate launch \
     --max_completion_length 512 \
     --fork_frac 0.5 \
     --learn_fork_frac True \
-    --fork_frac_min 0.0 --fork_frac_max 1.0 \
+    --fork_frac_min 0.02 --fork_frac_max 0.98 \
     --fork_head_lr 1e-3 \
     --block_size 64 \
     --steps 64 \

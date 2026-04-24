@@ -38,11 +38,20 @@ class ForkHead(nn.Module):
         # Value head: predicts E[reward | prompt], acts as a per-prompt baseline
         # for REINFORCE AND as a difficulty feature feeding back into the mean
         # (run14 change — see FORK_HEAD.md §6). Hard prompt (low V) -> early
-        # fork; easy prompt (high V) -> late fork. Coupling coeff initialised
-        # at +1 so behaviour at V=0 is exactly sigmoid(bias)=0.5 (matches the
-        # legacy fixed fork_frac=0.5 default).
+        # fork; easy prompt (high V) -> late fork.
+        #
+        # run18: coupling initialised at **0** (was +1 in run14–run17). With
+        # init=1 the value head was MSE-trained toward E[reward] ≈ 1.5 within
+        # a few dozen steps, biasing raw = proj(z) + 1·V(z) ≈ 1.5, so
+        # sigmoid(1.5)=0.82 and fork_frac saturated near `hi` (observed
+        # 0.75–0.92 in run17). With Phase-1 ≈ 0.8, the 8 siblings become
+        # near-identical, `filter_zero_correct_groups` filters ~97% of groups,
+        # and the main loop sees essentially no gradient — reward stays flat.
+        # With init=0 behaviour at t=0 is sigmoid(proj.bias)=0.5 regardless
+        # of V; REINFORCE is still free to grow/shrink `value_coupling` if the
+        # difficulty hypothesis is borne out by the data.
         self.value_head = nn.Linear(bottleneck, 1)
-        self.value_coupling = nn.Parameter(torch.tensor(1.0))
+        self.value_coupling = nn.Parameter(torch.tensor(0.0))
         # Init: zero proj.weight so all initial variation is carried by the
         # value-head coupling. proj.bias = 0 => sigmoid(0) = 0.5 at init.
         nn.init.zeros_(self.proj.weight)

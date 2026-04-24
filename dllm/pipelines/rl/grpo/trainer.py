@@ -56,6 +56,27 @@ class DiffuGRPOConfig(GRPOConfig):
     # Set to None to disable clipping (unsafe on dLLM).
     kl_ratio_clip: Optional[float] = 5.0
 
+    # -------- Noise suppression for sparse-correctness regimes ---------------
+    # When correctness is very rare (e.g. <5% pass rate), most groups collapse
+    # to a single shared reward. Their advantage is mathematically 0 but their
+    # tokens still enter the PPO loss denominator (num_items_in_batch), which
+    # dilutes the signal from the few informative groups. With scale_rewards=True
+    # it is much worse: tiny residual format-reward variance (std~0.01) gets
+    # divided out and turns into ±1 advantages — pure noise amplification.
+    #
+    # filter_zero_std_groups: zero BOTH advantages and completion_mask for
+    #   groups whose total-reward std == 0. Strictly a loss-denominator fix.
+    # filter_zero_correct_groups: same treatment for groups where the
+    #   correctness reward specifically has zero std (i.e. whole group right or
+    #   whole group wrong). This kills the format-only "noise gradient" in the
+    #   typical-case group where nobody solves the problem. Only active if a
+    #   reward func whose name contains "correct" is present.
+    filter_zero_std_groups: bool = False
+    filter_zero_correct_groups: bool = False
+    # If >0, every N optimizer steps print one (prompt, completion, extracted,
+    # answer, correctness) quadruple for sanity-checking the reward parser.
+    log_rollouts_every: int = 0
+
 
 class DiffuGRPOTrainer(GRPOTrainer):
     """
@@ -435,6 +456,25 @@ class DiffuGRPOTrainer(GRPOTrainer):
             std_grouped_rewards, torch.zeros_like(std_grouped_rewards)
         )
 
+        # --- zero-correctness-std mask (per group) ----------------------------
+        # Identifies groups where the correctness reward func produced identical
+        # values across all G siblings (typically: all wrong, occasionally: all
+        # right). Updates to these groups come purely from format-reward noise.
+        correctness_idx = next(
+            (i for i, n in enumerate(self.reward_func_names) if "correct" in n.lower()),
+            None,
+        )
+        if correctness_idx is not None:
+            corr_per_group = rewards_per_func[:, correctness_idx].view(
+                -1, self.num_generations
+            )
+            is_correct_std_zero = torch.isclose(
+                corr_per_group.std(dim=1),
+                torch.zeros_like(corr_per_group.std(dim=1)),
+            )
+        else:
+            is_correct_std_zero = torch.zeros_like(is_std_zero)
+
         mean_grouped_rewards = mean_grouped_rewards.repeat_interleave(
             self.num_generations, dim=0
         )
@@ -442,8 +482,31 @@ class DiffuGRPOTrainer(GRPOTrainer):
             self.num_generations, dim=0
         )
         advantages = rewards - mean_grouped_rewards
-        if self.scale_rewards:
+        # NOTE: TRL normalizes args.scale_rewards to one of {"group","batch","none"},
+        # mapping bool False -> "none". The string "none" is truthy in Python, so
+        # `if self.scale_rewards:` silently kept dividing. Compare against "none"
+        # explicitly to honour the user's intent.
+        if self.scale_rewards and self.scale_rewards != "none":
             advantages = advantages / (std_grouped_rewards + 1e-4)
+
+        # --- Apply zero-std / zero-correct-std filters ------------------------
+        # Mask BOTH advantages and completion_mask so filtered tokens contribute
+        # neither numerator nor denominator to the PPO loss.
+        filter_mask = torch.zeros_like(std_grouped_rewards, dtype=torch.bool)
+        if getattr(self.args, "filter_zero_std_groups", False):
+            filter_mask = filter_mask | is_std_zero.repeat_interleave(
+                self.num_generations, dim=0
+            )
+        if getattr(self.args, "filter_zero_correct_groups", False) and correctness_idx is not None:
+            filter_mask = filter_mask | is_correct_std_zero.repeat_interleave(
+                self.num_generations, dim=0
+            )
+        if filter_mask.any():
+            advantages = advantages * (~filter_mask).to(advantages.dtype)
+            completion_mask = completion_mask * (~filter_mask).to(
+                completion_mask.dtype
+            ).unsqueeze(1)
+            attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
 
         process_slice = slice(
             self.accelerator.process_index * len(prompts),
@@ -492,6 +555,42 @@ class DiffuGRPOTrainer(GRPOTrainer):
         self._metrics[mode]["frac_reward_zero_std"].append(
             is_std_zero.float().mean().item()
         )
+        self._metrics[mode]["frac_correct_zero_std"].append(
+            is_correct_std_zero.float().mean().item()
+        )
+        if filter_mask.any() or getattr(self.args, "filter_zero_std_groups", False) \
+                or getattr(self.args, "filter_zero_correct_groups", False):
+            self._metrics[mode]["frac_groups_filtered"].append(
+                filter_mask.view(-1, self.num_generations)[:, 0].float().mean().item()
+            )
+
+        # -- Periodic rollout dump for parser/reward sanity checking ----------
+        log_every = getattr(self.args, "log_rollouts_every", 0) or 0
+        if (
+            log_every > 0
+            and mode == "train"
+            and self.accelerator.is_main_process
+            and (self.state.global_step % log_every == 0)
+        ):
+            try:
+                from dllm.pipelines.rl.grpo.rewards.format import extract_xml_answer
+                ans_list = inputs[0].get("answer", None) if isinstance(inputs[0], dict) else None
+                for j in range(min(2, len(completions_text))):
+                    ext = extract_xml_answer(completions_text[j])
+                    corr_val = (
+                        rewards_per_func[j, correctness_idx].item()
+                        if correctness_idx is not None else float("nan")
+                    )
+                    print(
+                        f"\n[rollout step={self.state.global_step} idx={j}] "
+                        f"correctness={corr_val:.3f} "
+                        f"answer_gt={ans_list!r}\n"
+                        f"---completion---\n{completions_text[j][:600]}\n"
+                        f"---extracted--- {ext!r}\n",
+                        flush=True,
+                    )
+            except Exception as e:  # pragma: no cover
+                print(f"[rollout dump failed: {e}]", flush=True)
 
         _logs = getattr(self, "_textual_logs", None) or getattr(self, "_logs", None)
         if _logs is not None:

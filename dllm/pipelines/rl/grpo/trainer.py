@@ -576,10 +576,14 @@ class DiffuGRPOTrainer(GRPOTrainer):
             and (self.state.global_step % log_every == 0)
         ):
             try:
-                from dllm.pipelines.rl.grpo.rewards.format import extract_xml_answer
+                from dllm.pipelines.rl.grpo.rewards.format import (
+                    extract_xml_answer,
+                    extract_answer_lenient,
+                )
                 ans_list = inputs[0].get("answer", None) if isinstance(inputs[0], dict) else None
                 for j in range(min(2, len(completions_text))):
-                    ext = extract_xml_answer(completions_text[j])
+                    ext_strict = extract_xml_answer(completions_text[j])
+                    ext_lenient = extract_answer_lenient(completions_text[j])
                     corr_val = (
                         rewards_per_func[j, correctness_idx].item()
                         if correctness_idx is not None else float("nan")
@@ -589,7 +593,8 @@ class DiffuGRPOTrainer(GRPOTrainer):
                         f"correctness={corr_val:.3f} "
                         f"answer_gt={ans_list!r}\n"
                         f"---completion---\n{completions_text[j][:600]}\n"
-                        f"---extracted--- {ext!r}\n",
+                        f"---extracted lenient--- {ext_lenient!r}\n"
+                        f"---extracted strict XML--- {ext_strict[:120]!r}\n",
                         flush=True,
                     )
             except Exception as e:  # pragma: no cover

@@ -194,9 +194,22 @@ def extract_hash_answer(text: str) -> str | None:
 def correctness_reward_func(
     prompts, completions, answer, step=None, run_name=None, verbose=False, **kwargs
 ) -> list[float]:
+    from .format import extract_answer_lenient, extract_xml_answer as _strict
     responses = [completion[0]["content"] for completion in completions]
     q = prompts[0][-1]["content"]
-    extracted_responses = [extract_xml_answer(r) for r in responses]
+    extracted_responses = [extract_answer_lenient(r) for r in responses]
+
+    def _norm(s):
+        if s is None:
+            return None
+        s = str(s).strip().replace(",", "")
+        # strip trailing .0 / .00 so "91" == "91.0"
+        if s.endswith(".0") or s.endswith(".00"):
+            s = s.rstrip("0").rstrip(".")
+        return s
+
+    norm_answers = [_norm(a) for a in answer]
+    norm_ext = [_norm(r) for r in extracted_responses]
 
     if verbose:
         RED = "\033[91m"
@@ -213,9 +226,13 @@ def correctness_reward_func(
             "-" * 20,
             f"\n{BLUE}Response:{RESET}\n{responses[0]}\n",
             "-" * 20,
-            f"\n{YELLOW}Extracted:{RESET}\n{extracted_responses[0]}\n",
+            f"\n{YELLOW}Extracted (lenient):{RESET}\n{extracted_responses[0]}\n"
+            f"{YELLOW}Extracted (strict XML):{RESET}\n{_strict(responses[0])!r}\n",
         )
-    return [2.0 if r == a else 0.0 for r, a in zip(extracted_responses, answer)]
+    return [
+        2.0 if (r is not None and a is not None and r == a) else 0.0
+        for r, a in zip(norm_ext, norm_answers)
+    ]
 
 
 def int_reward_func(completions, **kwargs) -> list[float]:

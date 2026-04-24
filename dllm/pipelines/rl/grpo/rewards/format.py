@@ -2,11 +2,62 @@
 
 import re
 
+_NUMBER_RE = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
+
 
 def extract_xml_answer(text: str) -> str:
+    """Strict <answer>...</answer> extractor. Returns the whole input if the
+    opening tag is absent (legacy behaviour). Used by int/format rewards that
+    must stay sensitive to the XML structure."""
     answer = text.split("<answer>")[-1]
     answer = answer.split("</answer>")[0]
     return answer.strip()
+
+
+def extract_answer_lenient(text: str) -> str | None:
+    """Robust answer extractor for correctness checking.
+
+    Tries, in order:
+      1. <answer>...</answer>    (requested format)
+      2. #### <n>                (GSM8K native format, also LLaDA's natural
+                                  output when it drops the XML wrapper)
+      3. \\boxed{<n>}            (math-style)
+      4. Last number in the completion (very permissive fallback)
+
+    Returns the normalised numeric string (commas stripped) or None if no
+    number could be found at all.
+    """
+    if not text:
+        return None
+
+    # (1) Explicit <answer> tag only counts if the tag is actually present,
+    # otherwise split() returns the whole completion (== all reasoning text).
+    if "<answer>" in text:
+        inner = text.split("<answer>", 1)[1].split("</answer>", 1)[0]
+        nums = _NUMBER_RE.findall(inner)
+        if nums:
+            return nums[-1].replace(",", "")
+
+    # (2) GSM8K-native "#### <answer>" marker.
+    if "####" in text:
+        tail = text.split("####", 1)[1]
+        nums = _NUMBER_RE.findall(tail)
+        if nums:
+            return nums[0].replace(",", "")
+
+    # (3) \boxed{...}
+    m = re.search(r"\\boxed\{([^{}]*)\}", text)
+    if m:
+        nums = _NUMBER_RE.findall(m.group(1))
+        if nums:
+            return nums[-1].replace(",", "")
+
+    # (4) Last number anywhere (most permissive).
+    nums = _NUMBER_RE.findall(text)
+    if nums:
+        return nums[-1].replace(",", "")
+
+    return None
 
 
 def count_xml(text) -> float:

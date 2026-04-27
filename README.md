@@ -1,369 +1,103 @@
-<h1 align="center">dLLM</h1>
+# BT-GRPO 实验日志（base/dllm fork）
 
-<p align="center">
-Simple Diffusion Language Modeling
-</p>
+本仓库是 [`ZHZisZZ/dllm`](https://github.com/ZHZisZZ/dllm) 的 fork（push 到
+[`lbx154/dllm`](https://github.com/lbx154/dllm) 的 `btgrpo-base-port` 分支），
+专门做最小侵入版本的 **Branching-Trajectory GRPO (BT-GRPO)** 在
+`LLaDA-8B-Instruct` + LoRA + GSM8K 上的实验。
 
-<!-- <div align="center">
+> 上游 `dllm` 的原 README 在 [`README.upstream.md`](README.upstream.md)。
+> 这个 README 是实验主账本：每一次 run 改了什么、为什么改、结果如何。
 
-[![Report](https://img.shields.io/badge/arXiv-B31B1B?style=for-the-badge&logo=arxiv&logoColor=white)](https://arxiv.org/abs/2602.22661)
-[![Models](https://img.shields.io/badge/Hugging%20Face-yellow?style=for-the-badge&logo=huggingface&logoColor=white)](https://huggingface.co/dllm-hub)
+## 工作流约定
 
-</div> -->
+每次开新 run **先 commit**，commit message 格式：
 
-<p align="center">
-    📃 <a href="https://arxiv.org/pdf/2602.22661" target="_blank">Report</a> | 🤗 <a href="https://huggingface.co/dllm-hub" target="_blank">Models</a>
-</p>
-
-
-<p align="center">
-<img
-  src="assets/logo.gif"
-  alt="dLLM logo">
-</p>
-
-## Overview
-**dLLM** is a library that unifies the training and evaluation of **diffusion language models**, bringing transparency and reproducibility to the entire development pipeline:
-
-- dLLM provides scalable training pipelines (based on [`transformers`](https://github.com/huggingface/transformers/blob/main/src/transformers) [Trainer](https://github.com/huggingface/transformers/blob/main/src/transformers/trainer.py)), with support for [LoRA](https://github.com/huggingface/peft), [DeepSpeed](https://github.com/deepspeedai/DeepSpeed), [FSDP](https://pytorch.org/blog/introducing-pytorch-fully-sharded-data-parallel-api/) and beyond.
-
-- dLLM provides unified evaluation pipelines (based on [`lm-evaluation-harness`](https://github.com/EleutherAI/lm-evaluation-harness)) that abstracts away inference details and making customization simple.
-
-- Built on these components, dLLM provides the minimal **training / inference / evaluation** recipes for open-weight models (e.g., [LLaDA](https://arxiv.org/abs/2502.09992) and [Dream](https://arxiv.org/abs/2508.15487)), and implementations of training algorithms (e.g., [MDLM](https://arxiv.org/abs/2406.07524) (masked diffusion), [BD3LM](https://arxiv.org/abs/2503.09573) (block diffusion), [Edit Flows](https://arxiv.org/abs/2506.09018) and so on).
-
-<!-- > [!NOTE]
-> This repository is primarily for educational purposes and does not aim for 100% exact reproduction of official models (which is impossible). We hope it serves as a helpful reference for the community — contributions and improvements are always welcome! -->
-
-
-## News
-
-<!-- **[2026/02]** 📄 Checkout our **[`technical report`](assets/dLLM.pdf)**! -->
-
-**[2026/04] 🎯 [`diffu-GRPO`](https://github.com/dllm-reasoning/d1)**: We support diffu-GRPO training for masked diffusion language models, validated on [LLaDA](https://arxiv.org/abs/2502.09992) and [Tiny-A2D](https://huggingface.co/collections/dllm-hub/tiny-a2d) across five reasoning tasks (GSM8K, MATH, Countdown, Sudoku, Code). See [`examples/rl`](/examples/rl#grpo) for training instructions.
-
-**[2026/02] ⚡[`Fast-dLLM`](https://github.com/NVlabs/Fast-dLLM)**: We support accelerated inference and evaluation of  [LLaDA](https://arxiv.org/abs/2502.09992) and [Dream](https://arxiv.org/abs/2508.15487) with [Fast-dLLM](https://arxiv.org/abs/2505.22618) (cache, confidence-threshold decoding). See [`examples/fastdllm`](/examples/fastdllm) for inference / evaluation instructions.
-
-**[2025/12] 🤗[`Tiny-A2D`](https://huggingface.co/collections/dllm-hub/tiny-a2d)**: We released a collection of **SOTA** small (0.5B/0.6B) diffusion models adapted from AR models, with fully open recipes for converting **ANY** AR model (e.g., Qwen, LLaMA, and GPT-2) into a diffusion model. See [`examples/a2d`](/examples/a2d) for training / inference / evaluation instructions.
-
-**[2025/11] 🤗[`BERT-Chat`](https://huggingface.co/collections/dllm-hub/bert-chat)**: We released a collection of BERTs finetuned to chat with diffusion, with open recipes for turning **ANY** BERT encoder (e.g., BERT, RoBERTa, ModernBERT) into a diffusion model. See [`examples/bert`](/examples/bert) for training / inference / evaluation instructions.
-
-
-## Table of Contents
-- [Features](#features)
-- [Setup](#setup)
-- [Files](#files)
-- [Training](#training)
-- [Inference](#inference)
-- [Evaluation](#evaluation)
-- [Citation](#citation)
-
-
-## Features
-- [`examples/llada`](/examples/llada): Pretraining, finetuning and evaluating [LLaDA](https://arxiv.org/abs/2502.09992) / [LLaDA-MoE](https://arxiv.org/abs/2509.24389).
-- [`examples/llada2`](/examples/llada2): Inference of [LLaDA2.0](https://arxiv.org/abs/2512.15745).
-- [`examples/llada21`](/examples/llada21): Inference of [LLaDA2.1](https://arxiv.org/abs/2602.08676).
-- [`examples/dream`](/examples/dream): Pretraining, finetuning and evaluating [Dream](https://arxiv.org/abs/2508.15487).
-- [`examples/a2d`](/examples/a2d): Finetuning any autoregressive model to generate text with [masked diffusion](https://arxiv.org/abs/2406.07524) / [block diffusion](https://arxiv.org/abs/2503.09573).
-- [`examples/bert`](/examples/bert): Finetuning any [BERT](https://arxiv.org/abs/1810.04805) to be lightweight Chatbots.
-    <!-- <details>
-    <summary>🎬 Click to show BERT-Chat Demo</summary>
-
-    <p align="center">
-        <img src="/examples/bert/assets/chat.gif" alt="chat" width="80%">
-    </p>
-    <p align="center">
-    <em>
-        Chat with <a href="https://huggingface.co/dllm-hub/ModernBERT-large-chat-v0.1"><code>ModernBERT-large-chat-v0.1</code></a>. See <a href="/examples/bert/README.md#inference">Inference</a> for details.
-    </em>
-    </p>
-    </details> -->
-- [`examples/editflow`](/examples/editflow): Educational reference for training [Edit Flows](https://arxiv.org/abs/2506.09018) models, demonstrating how to extend existing DLLMs (e.g., LLaDA, Dream, BERT-Chat) with *edit operations*—insertion, deletion, and substitution—and how to pretrain or finetune Edit Flows models from scratch on public data.
-   <!-- <details>
-   <summary>🎬 Click to show EditFlow Demo</summary>
-
-   <p align="center">
-     <img src="/examples/editflow/assets/all.gif" alt="EditFlow demo" width="100%">
-   </p>
-   <p align="center"><em>EditFlow performing insertion (blue), substitution from mask tokens (black), substitution from non-mask tokens (red), and deletion (strikethrough → removed) during sampling.</em></p>
-
-   </details> -->
-- [`examples/fastdllm`](/examples/fastdllm): Inferencing and evaluating [LLaDA](https://arxiv.org/abs/2502.09992) and [Dream](https://arxiv.org/abs/2508.15487) with [Fast-dLLM](https://arxiv.org/abs/2505.22618) (cache, confidence-threshold decoding, and beyond).
-- [`examples/rl`](/examples/rl): [GRPO](https://github.com/dllm-reasoning/d1) training for [LLaDA](https://arxiv.org/abs/2502.09992) and [Tiny-A2D](https://huggingface.co/collections/dllm-hub/tiny-a2d) diffusion language models across reasoning tasks (GSM8K, MATH, Countdown, Sudoku, Code).
-- More upcoming.
-
-
-## Setup
-### Installation
-```bash
-# create and activate conda environment
-conda create -n dllm python=3.10 -y
-conda activate dllm
-
-# install pytorch with CUDA 12.4 (other pytorch/cuda versions should also work)
-conda install cuda=12.4 -c nvidia
-pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 \
-    --index-url https://download.pytorch.org/whl/cu124
-
-# install dllm package
-pip install -e .
 ```
-### (optional) Evaluation setup
+runN: <一行变更摘要>
 
-```bash
-# initialize `lm-evaluation-harness` submodule
-git submodule update --init --recursive
-
-# install submodule in editable mode with IFEval & Math dependencies
-pip install -e "lm-evaluation-harness[ifeval,math]"
+<可选细节>
 ```
 
-### (optional) Slurm setup
-For [Slurm](https://slurm.schedmd.com/) users, update [`scripts/train.slurm.sh`](/scripts/train.slurm.sh) for your cluster:
-```diff
-- #SBATCH --partition=mllm_safety # Note: adjust this for your cluster
-- #SBATCH --quotatype=spot        # Note: adjust this for your cluster
-+ #SBATCH --partition=YOUR_PARTITION
-+ #SBATCH --quotatype=YOUR_QUOTATYPE
-```
-Next, create a directory for your job logs:
-```shell
-mkdir .logs
-```
-This folder will store the log files generated by your sbatch jobs.
+run 编号 = 这个表里的下一个 N（不区分 vanilla/BT，连续递增）。  
+commit hash 写到表的 "Commit" 列。
 
-## Files
-```
-# modules for training / sampling
-dllm
-├── core                   # Core reusable modules shared across `dllm/pipelines` 
-│   ├── samplers
-│   ├── schedulers
-│   └── trainers
-├── data
-├── pipelines              # Application-specific training & inference pipelines
-│   ├── a2d
-│   ├── bert
-│   ├── dream
-│   ├── editflow
-│   ├── fastdllm
-│   ├── llada
-│   │   ├── models         # Model architecture and configs 
-│   │   ├── sampler.py     # Inference module
-│   │   ├── trainer.py     # Training module
-│   │   └── eval.py        # Evaluation module
-│   ├── llada2
-│   ├── llada21
-│   └── rl
-├── tools
-└── utils
+## 硬件 / 基线配置
 
-# entry points for training / sampling
-examples
-├── a2d
-├── bert
-├── dream
-├── editflow
-├── fastdllm
-├── llada
-│   ├── chat.py            # Interactive inference example
-│   ├── sample.py          # Inference example
-│   ├── pt.py              # Pretraining example
-│   ├── README.md          # Documentation
-│   ├── sft.py             # Supervised finetuning example
-│   └── eval.sh            # Evaluation script
-├── llada2
-├── llada21
-└── rl
-```
+- 单机 **8× H100 / B200**（每卡 ~180 GB）
+- 模型：`GSAI-ML/LLaDA-8B-Instruct` + LoRA（`r=128, α=64, dropout=0.05`，4-bit base）
+- 数据：`gsm8k`，`max_prompt_length=` 默认，`max_completion_length=256`
+- 采样：`steps=128`，`block_size=32` → 8 blocks × 16 steps/block
+- 训练：`max_steps=1000`，`lr=3e-6`，`G=6`，`per_device_bs=6`，`grad_accum=2`，
+  `num_iterations=12`，`β=0.04`，`ε=0.5`，`p_mask_prompt=0.15`，
+  `sync_ref_model=False`
+- DeepSpeed ZeRO-2，`WANDB_MODE=disabled`
 
-## Training
+## Run 总览
 
-A typical training entry script (for example, [`examples/llada/sft.py`](/examples/llada/sft.py)) looks like this:
-```python
-import transformers
+| Run     | Commit    | 算法                  | 关键参数                                                        | Steps | 末段 reward | 末段 KL | 备注                                                              |
+| ------- | --------- | --------------------- | --------------------------------------------------------------- | ----: | ----------: | ------: | ----------------------------------------------------------------- |
+| vanilla | upstream  | DiffuGRPO（无分叉）   | `MDLMSampler`，无 fork                                           |  1000 | ~baseline   | ~0.4    | 基线，`grpo-base-run1.log`                                        |
+| BT1     | `afbfb9f` | BT-GRPO，fork-only    | `fork_frac=0.5`，`apply_divergent_mask=False`                    |  ~440 | —           | 稳      | 中途杀，仅作为 fork-only 对照；shared 占一半步                    |
+| BT2     | `f383d12` | BT-GRPO，semi-AR fork | `fork_frac=0.06`，`apply_divergent_mask=True`，semi-AR 模式      |  1000 | 比 vanilla 高一点 | 0.4–0.7 | KL 稳；但发现 mid-block schedule slicing bug → 每条补全漏 ~7 个 mask token，soft_format reward 被 leak 的 mask 砸低 |
+| BT3     | `b62bf0d` | BT-GRPO，per-block fork | `fork_frac=0.06`，`per_block_fork=True`，`apply_divergent_mask=True` |  跑中 | —           | —       | **本次重点**。每 block 都跑 1/16 步 shared denoising，anchor 散布全序列；规避 mid-block bug；完整 1000 步对比 |
 
-import dllm
+末段 = 最后 ~50 步 MA。
 
-model_args, data_args, training_args = parser.parse_args_into_dataclasses()
-# ----- Model ------------------------------------------------------------------
-model = dllm.utils.get_model(model_args=model_args)
-# ----- Tokenizer --------------------------------------------------------------
-tokenizer = dllm.utils.get_tokenizer(model_args=model_args)
-# ----- Dataset ----------------------------------------------------------------
-dataset = "..."
+## 代码改动逐次摘要
 
-# ----- Training --------------------------------------------------------------
-trainer = dllm.core.trainers.MDLMTrainer(
-    model=model,
-    tokenizer=tokenizer,
-    train_dataset=dataset["train"],
-    eval_dataset=dataset["test"],
-    args=training_args,
-    data_collator=transformers.DataCollatorForSeq2Seq(
-        tokenizer,
-        return_tensors="pt",
-        padding=True,
-        label_pad_token_id=tokenizer.pad_token_id, 
-    ),
-)
-trainer.train()
-```
+### vanilla（upstream）
+直接用 `dllm.pipelines.rl.grpo.DiffuGRPOTrainer + MDLMSampler`。
+log: `.logs/grpo-base-run1.log`。
 
-You can launch training job locally with `accelerate`, or submit it to a [Slurm](https://slurm.schedmd.com/) cluster using `sbatch`.
-```shell
-# Run locally (ZeRO-2 on 8 GPUs with 4bit quantization and LoRA)
-accelerate launch \
-    --config_file scripts/accelerate_configs/zero2.yaml \
-    examples/llada/sft.py \
-    --num_train_epochs 4 \
-    --load_in_4bit True --lora True
-```
-```shell
-# Submit to a Slurm cluster (FSDP on 1 node, 8 GPUs)
-sbatch --gres=gpu:8 scripts/train.slurm.sh \
-    --accelerate_config "fsdp" \
-    --script_path "examples/llada/sft.py" \
-    --num_train_epochs 4
+### BT1 — `afbfb9f` "Add BT-GRPO minimal port"
+- 新增 `dllm/core/samplers/mdlm_branching.py`：`BranchingMDLMSampler`，
+  semi-AR fork（fork 落在某个 block 内的某一步），单 phase 1 + tile 到 G branch
+  做 phase 2。
+- 新增 `dllm/pipelines/rl/btgrpo/{__init__.py,trainer.py}`：
+  `BTGRPOTrainer/BTGRPOConfig`。最初带 `1/f_D` advantage scaling，
+  `apply_divergent_mask` 默认 True 但通过 cross-sibling 一致性算 mask。
+- 新增 `examples/rl/grpo/llada/train_bt.py`：训练入口。
 
-# Submit to a Slurm cluster (FSDP on 2 nodes, 16 GPUs)
-sbatch --nodes=2 --gres=gpu:8 scripts/train.slurm.sh \
-    --accelerate_config "fsdp" \
-    --script_path "examples/llada/sft.py" \
-    --num_train_epochs 4
-```
-See [Features](#features) for specific training recipes.
+### BT2.a — `3d7fc04` "Drop 1/f_D default, add rollout dump"
+- TRL 0.19 GRPO loss 是 mean-normalized over `completion_mask`，1/f_D
+  不能补偿被 mask 掉的 token，只是放大有效 LR → KL 爆。改 `apply_adv_scale`
+  默认 False。
+- 加 rank-0 jsonl rollout dump（`rollout_dump_path`，每 N 步一次）。
 
+### BT2.b — `f383d12` "Mask shared-phase tokens (not cross-sibling agreement)"
+- `apply_divergent_mask` 改成消费 sampler-side 的 shared-phase mask：
+  `BranchingMDLMSampler` 在 Phase 1 前 snapshot `initial_unmasked1`，Phase 1
+  结束后算 `(x1 != mask_id) & attn1.bool() & ~initial_unmasked1`，tile 到
+  G branches 存到 `_shared_phase_masks_chunks`。trainer 端读出来 zero 掉
+  对应的 `completion_mask`。
+- 语义更干净：mask 掉**真正在 shared phase 已确定**的 token，而不是事后
+  靠 sibling 一致性反推。
 
-<!-- Here are some useful tips for training: -->
-#### Useful tips for training:
-- Use a subset of data:
-`--dataset_args "allenai/tulu-3-sft-mixture[train:10000,test:1000]"`
-- Concatenate datasets:
-`--dataset_args "allenai/tulu-3-sft-mixture+HuggingFaceTB/smoltalk"`
-- Train with LoRA and 4bit quantization:
-`--load_in_4bit True --lora True`
-- Train with different distributed training methods:
-`--accelerate_config "ddp,zero-{1,2,3},fsdp"`
-- Load pretraining dataset in streaming mode:
-`--streaming True`
-- Preprocess SFT dataset before training (e.g., LLaDA):
-  <!-- ```shell
-  # Preprocess SFT data
-  python dllm/tools/preprocess_sft_dataset.py \
-      --model_name_or_path "GSAI-ML/LLaDA-8B-Base" \
-      --sft_map_fn_path "dllm.utils.default_sft_map_fn" \
-      --dataset_args "allenai/tulu-3-sft-mixture" \
-      --output_dir ".data/sft/llada/tulu-3-sft-mixture" \
-      --num_proc 64
-  
-  # SFT with preprocessed data
-  accelerate launch \
-      --config_file scripts/accelerate_configs/fsdp.yaml \
-      examples/llada/sft.py \
-      --model_name_or_path "GSAI-ML/LLaDA-8B-Base" \
-      --dataset_args ".data/sft/llada/tulu-3-sft-mixture" \
-      --load_preprocessed_data True \
-      ...
-  ``` -->
+### BT2 诊断（未提交修复）
+跑出来发现每条 completion 恰好有 `fork_step_idx = 7` 个 `<|mdm_mask|>`
+literal token 漏到答案里 → soft_format reward 暴跌。根因：`_run_blocks`
+对 fork 落点那个 block 的 Phase 2，`get_num_transfer_tokens` 用 full
+`steps_per_block=16` 重新算 schedule，但只跑 `s_hi - s_lo` 步 → schedule
+末尾 ~7 步该解的 mask 没解。**这个 bug 只在 fork 落 mid-block 时发生**。
 
-  ```diff
-  # Preprocess SFT data
-  + python dllm/tools/preprocess_sft_dataset.py \
-  +     --model_name_or_path "GSAI-ML/LLaDA-8B-Base" \
-  +     --sft_map_fn_path "dllm.utils.default_sft_map_fn" \
-  +     --dataset_args "allenai/tulu-3-sft-mixture" \
-  +     --output_dir ".data/sft/llada/tulu-3-sft-mixture" \
-  +     --num_proc 64
-  
-  # SFT with preprocessed data
-  accelerate launch \
-      --config_file scripts/accelerate_configs/fsdp.yaml \
-      examples/llada/sft.py \
-      --model_name_or_path "GSAI-ML/LLaDA-8B-Base" \
-  -   --dataset_args "allenai/tulu-3-sft-mixture" \
-  +   --dataset_args ".data/sft/llada/tulu-3-sft-mixture" \
-  +   --load_preprocessed_data True \
-      ...
-  ```
+### BT3 — `b62bf0d` "BT-GRPO: per-block fork (Phase-1 warm-up on every block)"
+- `BranchingMDLMSamplerConfig.per_block_fork: bool = True`：Phase 1 在
+  **每个 block** 都跑前 `fork_frac` 比例的步（不再是 semi-AR 单点 fork）。
+  - 8 blocks × `ceil(0.06 × 16) = 1` 步 = 8 步 shared NFE，分散到全序列
+  - Phase 2 每 block 跑剩下 15 步，G branch 各自填
+  - 总 NFE 不变（128）
+- `_run_blocks` 加 `uniform_fracs` 参数 + `math.ceil` 边界（避免
+  `fork_frac` 太小时 round 到 0 步）
+- 规避 mid-block schedule slicing bug，因为 Phase 1 / Phase 2 的边界整数
+  对齐到 step 数
+- 同时保住 diffusion-fork 语义（anchor 散布 vs AR-style prefix fork）
 
-## Inference
+启动脚本：`scripts/bt/launch_bt3.sh`。log: `.logs/grpo-bt3-run1.log`。
 
-We provide unified [samplers](/dllm/core/samplers) that abstracts away inference details. 
-A typical inference entry script (for example, [`examples/llada/sample.py`](/examples/llada/sample.py)) looks like this:
-```python
-import dllm
+## 已知遗留 bug（暂未修）
 
-model = dllm.utils.get_model(model_args=script_args).eval()
-tokenizer = dllm.utils.get_tokenizer(model_args=script_args)
-sampler = dllm.core.samplers.MDLMSampler(model=model, tokenizer=tokenizer)
-
-messages = [
-    [{"role": "user", "content": "Lily runs 12 km/h for 4 hours. How far in 8 hours?"}],
-    [{"role": "user", "content": "Please write an educational python function."}],
-]
-
-inputs = tokenizer.apply_chat_template(
-    messages,
-    add_generation_prompt=True,
-    tokenize=True,
-)
-
-outputs = sampler.sample(inputs, return_dict=True)
-sequences = dllm.utils.sample_trim(tokenizer, outputs.sequences.tolist(), inputs)
-```
-
-You can also try interactive chat script (for example, [`examples/llada/chat.py`](/examples/llada/chat.py)) for visualized multi-turn dialogue:
-```shell
-python -u examples/llada/chat.py --model_name_or_path "GSAI-ML/LLaDA-8B-Instruct"
-```
-
-You can accelerate inference of [LLaDA](https://arxiv.org/abs/2502.09992) and [Dream](https://arxiv.org/abs/2508.15487) with [Fast-dLLM](https://arxiv.org/abs/2505.22618).
-```shell
-python examples/fastdllm/llada/sample.py --model_name_or_path "GSAI-ML/LLaDA-8B-Instruct" --use_cache prefix --threshold 0.9
-```
-
-<p align="center">
-    <img src="/assets/chat.gif" alt="chat" width="80%">
-</p>
-<!-- <p align="center"><em>EditFlow performing insertion (blue), substitution from mask tokens (black), substitution from non-mask tokens (red), and deletion (strikethrough → removed) during sampling.</em></p> -->
-
-## Evaluation
-> Read [(optional) Evaluation setup](/README.md#optional-evaluation-setup) before running evaluation. 
-
-For example, to evaluate [`LLaDA-8B-Instruct`](https://huggingface.co/GSAI-ML/LLaDA-8B-Instruct) on [`MMLU_Pro`](https://huggingface.co/datasets/TIGER-Lab/MMLU-Pro) using 4 GPUs, run:
-```shell
-accelerate launch --num_processes 4 \
-    dllm/pipelines/llada/eval.py \
-    --tasks "mmlu_pro" \
-    --model "llada" \
-    --apply_chat_template \
-    --num_fewshot 0 \
-    --model_args "pretrained=GSAI-ML/LLaDA-8B-Instruct,is_check_greedy=False,mc_num=1,max_new_tokens=256,steps=256,block_size=256,cfg_scale=0.0"
-```
-
-We also provide scripts to automatically evaluate [LLaDA](https://arxiv.org/abs/2502.09992), [Dream](https://arxiv.org/abs/2508.15487), and [BERT-Chat](https://huggingface.co/collections/dllm-hub/bert-chat) on all benchmarks.
-For example, you can run [`examples/llada/eval.sh`](/examples/llada/eval.sh) directly using the following commands:
-```shell
-bash examples/llada/eval.sh --model_name_or_path "GSAI-ML/LLaDA-8B-Instruct" --instruct True
-bash examples/llada/eval.sh --model_name_or_path "GSAI-ML/LLaDA-8B-Base" --instruct False
-```
-
-We provide scripts to evaluate [LLaDA](https://arxiv.org/abs/2502.09992) and [Dream](https://arxiv.org/abs/2508.15487) using [Fast-dLLM](https://arxiv.org/abs/2505.22618):
-```shell
-bash examples/fastdllm/llada/eval.sh --model_name_or_path "GSAI-ML/LLaDA-8B-Instruct" --instruct True --num_gpu 1
-bash examples/fastdllm/dream/eval.sh --model_name_or_path "Dream-org/Dream-v0-Base-7B" --instruct False --num_gpu 1
-```
-
-
-## Citation
-```
-@misc{zhou2026dllm,
-      title={dLLM: Simple Diffusion Language Modeling}, 
-      author={Zhanhui Zhou and Lingjie Chen and Hanghang Tong and Dawn Song},
-      year={2026},
-      eprint={2602.22661},
-      archivePrefix={arXiv},
-      primaryClass={cs.CL},
-      url={https://arxiv.org/abs/2602.22661}, 
-}
-```
+1. **mask_id 没在 logits 上 suppress** —— 模型可以 argmax 到 mask_id
+   token，影响 vanilla/BT 两个 sampler。优先级低，因为 mask_id 通常
+   logit 很低。
+2. （已通过 BT3 per-block fork **规避**，未"真正"修复）`_run_blocks`
+   的 schedule slicing bug 在 legacy semi-AR 模式 + mid-block fork 下仍存在。

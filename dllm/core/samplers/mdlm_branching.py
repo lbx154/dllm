@@ -40,6 +40,12 @@ from dllm.core.samplers.utils import add_gumbel_noise, get_num_transfer_tokens
 class BranchingMDLMSamplerConfig(MDLMSamplerConfig):
     num_branches: int = 8
     fork_frac: float = 0.5  # fraction of total steps spent in the shared phase
+    # When True, Phase 1 runs the first `fork_frac` fraction of steps on EVERY
+    # block (per-block warm-up), distributing shared anchors across the whole
+    # sequence rather than concentrating them at the leftmost block. When
+    # False, fork happens at a single global step boundary in the semi-AR
+    # left-to-right schedule (legacy behavior).
+    per_block_fork: bool = True
 
 
 @dataclass
@@ -69,7 +75,8 @@ class BranchingMDLMSampler(MDLMSampler):
         steps_per_block: int,
         block_range: tuple[int, int],
         transfer_fracs_per_block: tuple[float, float],
-        temperature: float,
+        uniform_fracs: bool = False,
+        temperature: float = 0.0,
         cfg_scale: float,
         remasking: str,
         stochastic_transfer: bool,
@@ -118,7 +125,13 @@ class BranchingMDLMSampler(MDLMSampler):
             effective_steps = num_transfer_tokens.size(1)
 
             # Which step-range inside this block to actually run
-            if b == b_start and b == b_end - 1:
+            if uniform_fracs:
+                # Apply (lo, hi) fraction to every block in the range. Used by
+                # per-block fork mode to give each block the same shared/
+                # divergent split.
+                s_lo = int(transfer_fracs_per_block[0] * effective_steps)
+                s_hi = int(transfer_fracs_per_block[1] * effective_steps)
+            elif b == b_start and b == b_end - 1:
                 s_lo = int(transfer_fracs_per_block[0] * effective_steps)
                 s_hi = int(transfer_fracs_per_block[1] * effective_steps)
             elif b == b_start:
@@ -206,6 +219,7 @@ class BranchingMDLMSampler(MDLMSampler):
 
         num_branches = kwargs.get("num_branches", config.num_branches)
         fork_frac = kwargs.get("fork_frac", config.fork_frac)
+        per_block_fork = kwargs.get("per_block_fork", config.per_block_fork)
 
         steps = kwargs.get("steps", config.steps)
         max_new_tokens = kwargs.get("max_new_tokens", config.max_new_tokens)
@@ -294,15 +308,29 @@ class BranchingMDLMSampler(MDLMSampler):
         steps_per_block = math.ceil(steps / num_blocks)
 
         # --- Phase 1: shared denoising (B_unique copies) -------------------------
-        # We express fork_frac in terms of total-block-step-index:
-        #   total_steps_effective = num_blocks * steps_per_block
-        #   fork_step_idx = floor(fork_frac * total_steps_effective)
-        #   fork_block_idx = fork_step_idx // steps_per_block
-        #   fork_frac_in_block = (fork_step_idx % steps_per_block) / steps_per_block
-        total_eff = num_blocks * steps_per_block
-        fork_step_idx = int(fork_frac * total_eff)
-        fork_block_idx = fork_step_idx // steps_per_block
-        fork_frac_in_block = (fork_step_idx % steps_per_block) / steps_per_block
+        if per_block_fork:
+            # Per-block warm-up: run the first `fork_frac` fraction of steps on
+            # EVERY block. Shared anchors are distributed across the sequence.
+            phase1_block_range = (0, num_blocks)
+            phase1_fracs = (0.0, fork_frac)
+            phase2_block_range = (0, num_blocks)
+            phase2_fracs = (fork_frac, 1.0)
+            uniform = True
+        else:
+            # Legacy: fork at a single global step boundary in semi-AR order.
+            #   total_steps_effective = num_blocks * steps_per_block
+            #   fork_step_idx = floor(fork_frac * total_steps_effective)
+            #   fork_block_idx = fork_step_idx // steps_per_block
+            #   fork_frac_in_block = (fork_step_idx % steps_per_block) / steps_per_block
+            total_eff = num_blocks * steps_per_block
+            fork_step_idx = int(fork_frac * total_eff)
+            fork_block_idx = fork_step_idx // steps_per_block
+            fork_frac_in_block = (fork_step_idx % steps_per_block) / steps_per_block
+            phase1_block_range = (0, fork_block_idx + 1)
+            phase1_fracs = (0.0, fork_frac_in_block if fork_block_idx < num_blocks else 1.0)
+            phase2_block_range = (fork_block_idx, num_blocks)
+            phase2_fracs = (fork_frac_in_block, 1.0)
+            uniform = False
 
         histories = [x1.clone()] if return_dict else None
         x1 = self._run_blocks(
@@ -313,8 +341,9 @@ class BranchingMDLMSampler(MDLMSampler):
             max_new_tokens=max_new_tokens,
             block_size=block_size,
             steps_per_block=steps_per_block,
-            block_range=(0, fork_block_idx + 1),
-            transfer_fracs_per_block=(0.0, fork_frac_in_block if fork_block_idx < num_blocks else 1.0),
+            block_range=phase1_block_range,
+            transfer_fracs_per_block=phase1_fracs,
+            uniform_fracs=uniform,
             temperature=temperature,
             cfg_scale=cfg_scale,
             remasking=remasking,
@@ -366,8 +395,9 @@ class BranchingMDLMSampler(MDLMSampler):
             max_new_tokens=max_new_tokens,
             block_size=block_size,
             steps_per_block=steps_per_block,
-            block_range=(fork_block_idx, num_blocks),
-            transfer_fracs_per_block=(fork_frac_in_block, 1.0),
+            block_range=phase2_block_range,
+            transfer_fracs_per_block=phase2_fracs,
+            uniform_fracs=uniform,
             temperature=temperature,
             cfg_scale=cfg_scale,
             remasking=remasking,

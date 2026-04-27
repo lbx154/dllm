@@ -108,6 +108,7 @@ def train():
         remasking=training_args.remasking,
         num_branches=training_args.num_generations,
         fork_frac=training_args.fork_frac,
+        per_block_fork=training_args.per_block_fork,
     )
 
     logger.info(

@@ -48,6 +48,7 @@ class BTGRPOConfig(DiffuGRPOConfig):
     """BT-GRPO config = DiffuGRPOConfig + fork knobs."""
 
     fork_frac: float = 0.5
+    per_block_fork: bool = True
     apply_divergent_mask: bool = True
     apply_adv_scale: bool = False
     div_frac_floor: float = 0.1

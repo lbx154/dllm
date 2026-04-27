@@ -128,9 +128,18 @@ class BranchingMDLMSampler(MDLMSampler):
             if uniform_fracs:
                 # Apply (lo, hi) fraction to every block in the range. Used by
                 # per-block fork mode to give each block the same shared/
-                # divergent split.
-                s_lo = int(transfer_fracs_per_block[0] * effective_steps)
-                s_hi = int(transfer_fracs_per_block[1] * effective_steps)
+                # divergent split. Use ceil so a small but nonzero fork_frac
+                # still produces at least 1 shared step per block (rather than
+                # rounding down to 0 when fork_frac < 1/steps_per_block).
+                lo_frac, hi_frac = transfer_fracs_per_block
+                if lo_frac <= 0.0:
+                    s_lo = 0
+                else:
+                    s_lo = math.ceil(lo_frac * effective_steps)
+                if hi_frac >= 1.0:
+                    s_hi = effective_steps
+                else:
+                    s_hi = math.ceil(hi_frac * effective_steps)
             elif b == b_start and b == b_end - 1:
                 s_lo = int(transfer_fracs_per_block[0] * effective_steps)
                 s_hi = int(transfer_fracs_per_block[1] * effective_steps)

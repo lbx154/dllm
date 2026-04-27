@@ -39,7 +39,8 @@ commit hash 写到表的 "Commit" 列。
 | vanilla | upstream  | DiffuGRPO（无分叉）   | `MDLMSampler`，无 fork                                           |  1000 | ~baseline   | ~0.4    | 基线，`grpo-base-run1.log`                                        |
 | BT1     | `afbfb9f` | BT-GRPO，fork-only    | `fork_frac=0.5`，`apply_divergent_mask=False`                    |  ~440 | —           | 稳      | 中途杀，仅作为 fork-only 对照；shared 占一半步                    |
 | BT2     | `f383d12` | BT-GRPO，semi-AR fork | `fork_frac=0.06`，`apply_divergent_mask=True`，semi-AR 模式      |  1000 | 比 vanilla 高一点 | 0.4–0.7 | KL 稳；但发现 mid-block schedule slicing bug → 每条补全漏 ~7 个 mask token，soft_format reward 被 leak 的 mask 砸低 |
-| BT3     | `b62bf0d` | BT-GRPO，per-block fork | `fork_frac=0.06`，`per_block_fork=True`，`apply_divergent_mask=True` |  跑中 | —           | —       | **本次重点**。每 block 都跑 1/16 步 shared denoising，anchor 散布全序列；规避 mid-block bug；完整 1000 步对比 |
+| BT3     | `b62bf0d` | BT-GRPO，per-block fork | `fork_frac=0.06`，`per_block_fork=True`，`apply_divergent_mask=True` |  1000 | 中等 | 0.5–0.7 | per-block fork 跑通，但 rollout dump 显示每条 completion 仍漏 13–15 个 `<|mdm_mask|>`；定位到 `_run_blocks` schedule slicing bug 在 per-block 模式下被**每个 block** 触发（而非只 mid-block）→ 漏 mask × 8 blocks |
+| BT4     | `0a23242` | BT-GRPO，per-block fork + 修两 bug | `fork_frac=0.25`，`per_block_fork=True`，`apply_divergent_mask=True` |  跑中 | —    | —       | **本次重点**。修 schedule slicing bug + 修 per-block 模式 cross-block topk 泄漏 bug；rollout 验证 0/48 mask token 泄漏；fork_frac 提到 0.25 让 shared anchor 更显著 |
 
 末段 = 最后 ~50 步 MA。
 
@@ -94,10 +95,45 @@ literal token 漏到答案里 → soft_format reward 暴跌。根因：`_run_blo
 
 启动脚本：`scripts/bt/launch_bt3.sh`。log: `.logs/grpo-bt3-run1.log`。
 
+### BT3 诊断 — rollout 仍漏 mask
+跑完 BT3 dump 出来的 `.logs/rollouts-bt3-run1.jsonl` 84 条 completion 里 66 条
+含 15 个 `<|mdm_mask|>`、6 条含 16 个，比 BT2 的 ~7 还差。原因：之前以为
+per-block fork 把 fork 边界对齐到 step 整数就能绕过 schedule slicing bug，
+**错了**。per-block 模式下每个 block 都进入 Phase 2 continuation：
+`_run_blocks` 进来时 `s_lo > 0`，剩余 mask ~30 个，但仍按 canonical
+`steps_per_block=16` 算 schedule（前 `fork_step_idx` 项已被 Phase 1 消费，
+但schedule 是按"32 mask / 16 步 = 2 tok/iter"算的），结果只跑了 15 iter，
+delivery 只有 ~28，每 block 漏 ~2 个 mask × 8 blocks ≈ 16 个 → 跟观测吻合。
+
+### BT4 — `4991187` + `0a23242` "Schedule slicing fix + per-block topk fix"
+两个独立 bug，各修一次：
+
+1. **Schedule slicing fix**（commit `4991187`）：`_run_blocks` 里
+   - `s_lo == 0`（fresh canonical phase）：照旧用 `steps=steps_per_block`，
+     但只跑 `range(0, n_run)`（消费 schedule 的左半段），保持 ~2 tok/iter
+   - `s_lo > 0`（continuation）：用**剩余 mask 数**和 `steps=n_run`
+     新算一份 schedule，跑满全部 `n_run` 步 → 不论这是 BT2 mid-block
+     continuation 还是 BT3 per-block continuation，都把残余 mask 全部解掉
+
+2. **Per-block cross-block topk leakage fix**（commit `0a23242`）：
+   per-block fork 的 Phase 1 visit 第 `b` 个 block 时，前面 block 还有 mask；
+   原代码只 suppress `x0_p[:, prompt + (b+1)*block_size:] = -inf`（post-block），
+   但 pre-block 没 suppress → topk 可能从前面 block 抽 token →
+   有的 block 被抽干到 0 mask，Phase 2 进来 `get_num_transfer_tokens`
+   返回 shape `(B, 0)` → `IndexError`。修复：`uniform_fracs` 模式下
+   也 `x0_p[:, : prompt + b*block_size] = -inf`。
+
+3. **配置升级**：`fork_frac` 从 0.06 → 0.25（4/16 步 shared per block），
+   让 shared anchor 在 reward 上更显著（BT-GRPO 的核心 claim 是 shared
+   anchor 引入 trajectory 间方差缩减）。
+
+启动脚本：`scripts/bt/launch_bt4.sh`。log: `.logs/grpo-bt4-run1.log`。
+**验证**：dump 48 条 completion，全部 0 个 `<|mdm_mask|>` 泄漏；training
+step 77 时 reward=0.68，active_frac=0.75，shared_filled_frac=0.25。
+
 ## 已知遗留 bug（暂未修）
 
 1. **mask_id 没在 logits 上 suppress** —— 模型可以 argmax 到 mask_id
    token，影响 vanilla/BT 两个 sampler。优先级低，因为 mask_id 通常
-   logit 很低。
-2. （已通过 BT3 per-block fork **规避**，未"真正"修复）`_run_blocks`
-   的 schedule slicing bug 在 legacy semi-AR 模式 + mid-block fork 下仍存在。
+   logit 很低；BT4 之后实测 0 泄漏说明在正常 schedule 下不会发生，
+   但极端 fork_frac 可能仍触发。

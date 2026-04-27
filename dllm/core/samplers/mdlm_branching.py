@@ -116,46 +116,49 @@ class BranchingMDLMSampler(MDLMSampler):
                     width = end - start
                     block_mask_index[j, :width] = x[j, start:end] == mask_id
 
+            # Determine which slice of the canonical `steps_per_block` schedule
+            # is assigned to *this* call. (lo, hi) are step indices into the
+            # full canonical schedule; we will run (hi - lo) iterations.
+            if uniform_fracs:
+                lo_frac, hi_frac = transfer_fracs_per_block
+                s_lo = 0 if lo_frac <= 0.0 else math.ceil(lo_frac * steps_per_block)
+                s_hi = steps_per_block if hi_frac >= 1.0 else math.ceil(hi_frac * steps_per_block)
+            elif b == b_start and b == b_end - 1:
+                s_lo = int(transfer_fracs_per_block[0] * steps_per_block)
+                s_hi = int(transfer_fracs_per_block[1] * steps_per_block)
+            elif b == b_start:
+                s_lo = int(transfer_fracs_per_block[0] * steps_per_block)
+                s_hi = steps_per_block
+            elif b == b_end - 1:
+                s_lo = 0
+                s_hi = int(transfer_fracs_per_block[1] * steps_per_block)
+            else:
+                s_lo = 0
+                s_hi = steps_per_block
+            s_lo = max(0, min(s_lo, steps_per_block))
+            s_hi = max(s_lo, min(s_hi, steps_per_block))
+            n_run = s_hi - s_lo
+            if n_run <= 0:
+                continue
+
+            # Schedule fix (avoids "schedule slicing" bug):
+            #   - s_lo == 0: this call is the START of denoising for this
+            #     block. Use canonical schedule (steps=steps_per_block)
+            #     against the FULL block mask; consume entries [0, n_run).
+            #     Preserves the canonical token-delivery rate.
+            #   - s_lo > 0: this call is a CONTINUATION. block_mask_index
+            #     reflects only the masks left after the prior phase. Build
+            #     a fresh schedule that delivers ALL remaining masks across
+            #     n_run iterations; consume entries [0, n_run).
+            sched_steps = steps_per_block if s_lo == 0 else n_run
             num_transfer_tokens = get_num_transfer_tokens(
                 mask_index=block_mask_index,
-                steps=steps_per_block,
+                steps=sched_steps,
                 scheduler=self.scheduler,
                 stochastic=stochastic_transfer,
             )
-            effective_steps = num_transfer_tokens.size(1)
 
-            # Which step-range inside this block to actually run
-            if uniform_fracs:
-                # Apply (lo, hi) fraction to every block in the range. Used by
-                # per-block fork mode to give each block the same shared/
-                # divergent split. Use ceil so a small but nonzero fork_frac
-                # still produces at least 1 shared step per block (rather than
-                # rounding down to 0 when fork_frac < 1/steps_per_block).
-                lo_frac, hi_frac = transfer_fracs_per_block
-                if lo_frac <= 0.0:
-                    s_lo = 0
-                else:
-                    s_lo = math.ceil(lo_frac * effective_steps)
-                if hi_frac >= 1.0:
-                    s_hi = effective_steps
-                else:
-                    s_hi = math.ceil(hi_frac * effective_steps)
-            elif b == b_start and b == b_end - 1:
-                s_lo = int(transfer_fracs_per_block[0] * effective_steps)
-                s_hi = int(transfer_fracs_per_block[1] * effective_steps)
-            elif b == b_start:
-                s_lo = int(transfer_fracs_per_block[0] * effective_steps)
-                s_hi = effective_steps
-            elif b == b_end - 1:
-                s_lo = 0
-                s_hi = int(transfer_fracs_per_block[1] * effective_steps)
-            else:
-                s_lo = 0
-                s_hi = effective_steps
-            s_lo = max(0, min(s_lo, effective_steps))
-            s_hi = max(s_lo, min(s_hi, effective_steps))
-
-            for i in range(s_lo, s_hi):
+            for i in range(n_run):
                 mask_index = x == mask_id
 
                 if cfg_scale > 0.0:

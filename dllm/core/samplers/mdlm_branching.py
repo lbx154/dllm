@@ -197,6 +197,16 @@ class BranchingMDLMSampler(MDLMSampler):
                     raise NotImplementedError(remasking)
 
                 for j in range(B):
+                    # Suppress confidence outside the current block. We always
+                    # zero the post-block tail (semi-AR left-to-right), and in
+                    # per-block / uniform mode also zero the pre-block prefix
+                    # because earlier blocks may still hold masks (Phase 1 only
+                    # delivers a fraction per block before moving on); without
+                    # this, the topk over all masks could leak unmasking onto
+                    # earlier blocks and starve the current one, eventually
+                    # producing block_mask=0 and a zero-width schedule.
+                    if uniform_fracs:
+                        x0_p[j, : prompt_lens[j] + b * block_size] = -np.inf
                     x0_p[j, prompt_lens[j] + (b + 1) * block_size :] = -np.inf
 
                 x0 = torch.where(mask_index, x0, x)

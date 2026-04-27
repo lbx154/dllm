@@ -286,6 +286,10 @@ class BranchingMDLMSampler(MDLMSampler):
             )
             unmasked_index1 = unmasked_index1 & ~keep_mask
 
+        # snapshot of pre-Phase-1 unmasked positions, used below to identify
+        # exactly which positions get filled during the shared phase.
+        initial_unmasked1 = unmasked_index1.clone()
+
         num_blocks = math.ceil(max_new_tokens / block_size)
         steps_per_block = math.ceil(steps / num_blocks)
 
@@ -323,6 +327,10 @@ class BranchingMDLMSampler(MDLMSampler):
         )
 
         # --- Tile x_{fork} across G branches -------------------------------------
+        # Positions filled in Phase 1 are the new shared-phase tokens — by
+        # construction identical across all G branches and never overwritten
+        # in Phase 2 (Phase 2's unmasked_index inherits from Phase 1).
+        shared_phase_mask1 = (x1 != mask_id) & attn1.bool() & ~initial_unmasked1
         x2 = (
             x1.unsqueeze(1)
             .expand(B_unique, num_branches, T)
@@ -373,4 +381,19 @@ class BranchingMDLMSampler(MDLMSampler):
 
         if return_dict:
             return BaseSamplerOutput(sequences=x2, histories=histories)
+        # Stash the per-call shared-phase mask (tiled to N = B_unique * G) on
+        # the sampler instance so that downstream trainers (e.g. BTGRPOTrainer)
+        # can recover, for each generated token position, whether it was
+        # finalized during the shared (pre-fork) phase.  Append rather than
+        # overwrite so trainers that loop sample() over micro-batches can
+        # concatenate.
+        shared_phase_mask = (
+            shared_phase_mask1.unsqueeze(1)
+            .expand(B_unique, num_branches, T)
+            .contiguous()
+            .view(B_unique * num_branches, T)
+        )
+        if not hasattr(self, "_shared_phase_masks_chunks"):
+            self._shared_phase_masks_chunks = []
+        self._shared_phase_masks_chunks.append(shared_phase_mask.detach())
         return x2

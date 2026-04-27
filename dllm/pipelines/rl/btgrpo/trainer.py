@@ -2,21 +2,31 @@
 
 Only differences from DiffuGRPOTrainer:
 
-1. ``divergent_mask`` — completion_mask is zero'd on positions where every
-   sibling in a fork-group emitted the same token (those positions
-   contribute identical log-probs to every branch and yield a 0 advantage
-   contribution).  TRL's GRPO loss is mean-normalized over the mask, so
-   no extra advantage rescaling is needed; the per-divergent-token
-   gradient magnitude already matches vanilla per-token gradient magnitude.
+1. ``apply_divergent_mask`` (default True) — zero out completion_mask at
+   token positions that were *finalized during the shared (pre-fork)
+   phase* of the BranchingMDLMSampler.  These positions are by
+   construction identical across all G fork siblings (the sampler tiles
+   x_fork to G branches and Phase-2 inherits that frozen state), so the
+   per-token gradient on every sibling is identical and group-normalized
+   advantage cancels them to 0 in expectation — they are pure noise in
+   the policy gradient and only dilute the mean-normalized loss.
 
-2. (optional, OFF by default) ``adv_scale = 1 / max(f_D, floor)``.  This
-   was originally added to "compensate for fewer training tokens", but
-   under mean-normalized loss it is *not* a compensation — it just
-   inflates effective LR on divergent positions by 1/f_D and pushes
-   policy out of the trust region.  Kept behind a flag for ablations.
+   The shared-phase mask comes from the sampler itself
+   (BranchingMDLMSampler._shared_phase_masks_chunks).  This is cleaner
+   than the earlier "all G siblings agree" heuristic, which also masked
+   *post-fork* positions where branches happened to coincide
+   organically — those positions carry real learning signal and should
+   not be removed.
 
-3. Optional rollout dump (rank-0 only, jsonl) so we can inspect what the
-   model is actually generating when reward collapses.
+2. ``apply_adv_scale`` (default False) — optional 1 / max(active_frac,
+   floor) advantage rescaling.  Originally added as a "compensation for
+   fewer training tokens", but TRL's GRPO loss is already
+   mean-normalized over the mask, so the scaling does NOT compensate;
+   it only inflates effective LR on active positions and pushes policy
+   out of the trust region.  Kept behind a flag for ablations only.
+
+3. Optional rollout dump (rank-0, jsonl, every N optimizer steps) for
+   inspection.
 """
 
 from __future__ import annotations
@@ -50,44 +60,50 @@ class BTGRPOTrainer(DiffuGRPOTrainer):
 
     @profiling_decorator
     def _generate_and_score_completions(self, inputs):
+        # Reset the per-step shared-phase mask buffer on the sampler so that
+        # (super) sample() loop only writes this batch's masks.
+        self.sampler._shared_phase_masks_chunks = []
+
         batch = super()._generate_and_score_completions(inputs)
 
-        G = self.args.num_generations
         completion_ids = batch["completion_ids"]
         N, L = completion_ids.shape
 
-        div_frac = None
-        if getattr(self.args, "apply_divergent_mask", True) and N % G == 0:
-            B_unique = N // G
+        active_frac = None
+        chunks = getattr(self.sampler, "_shared_phase_masks_chunks", []) or []
+        if (
+            getattr(self.args, "apply_divergent_mask", True)
+            and chunks
+        ):
+            shared_full = torch.cat(chunks, dim=0)  # [N_local, T_full]
+            # T_full = prompt_len + completion_len.  Slice the completion tail.
+            shared_completion = shared_full[:, -L:].to(batch["completion_mask"].device)
+            keep = (~shared_completion.bool()).to(batch["completion_mask"].dtype)
+            batch["completion_mask"] = batch["completion_mask"] * keep
 
-            grouped = completion_ids.view(B_unique, G, L)
-            first = grouped[:, 0:1, :]
-            divergent = (grouped != first).any(dim=1)  # [B_unique, L]
-            divergent_flat = (
-                divergent.unsqueeze(1)
-                .expand(B_unique, G, L)
-                .contiguous()
-                .view(N, L)
-                .to(batch["completion_mask"].dtype)
-            )
-            batch["completion_mask"] = batch["completion_mask"] * divergent_flat
-
-            device = batch["completion_mask"].device
-            div_frac_local = divergent.float().mean().detach().to(device)
-            div_frac_global = self.accelerator.reduce(div_frac_local, reduction="mean")
-            div_frac = float(div_frac_global.item())
+            # Fraction of completion-area tokens that were NOT filled in the
+            # shared phase, i.e. the fraction that contributes to the loss.
+            active_local = keep.float().mean().detach().to(batch["completion_mask"].device)
+            active_global = self.accelerator.reduce(active_local, reduction="mean")
+            active_frac = float(active_global.item())
 
             mode = "train" if self.model.training else "eval"
-            self._metrics[mode].setdefault("btgrpo/divergent_frac", []).append(div_frac)
+            self._metrics[mode].setdefault("btgrpo/active_frac", []).append(active_frac)
+            self._metrics[mode].setdefault(
+                "btgrpo/shared_filled_frac", []
+            ).append(1.0 - active_frac)
 
             if getattr(self.args, "apply_adv_scale", False):
                 floor = float(self.args.div_frac_floor)
-                adv_scale = 1.0 / max(div_frac, floor)
+                adv_scale = 1.0 / max(active_frac, floor)
                 if "advantages" in batch and isinstance(batch["advantages"], torch.Tensor):
                     batch["advantages"] = batch["advantages"] * adv_scale
                 self._metrics[mode].setdefault("btgrpo/adv_scale", []).append(adv_scale)
 
-        self._maybe_dump_rollouts(batch, div_frac)
+        # Drop the cached masks so they don't accumulate across iterations.
+        self.sampler._shared_phase_masks_chunks = []
+
+        self._maybe_dump_rollouts(batch, active_frac)
         return batch
 
     # ------------------------------------------------------------------

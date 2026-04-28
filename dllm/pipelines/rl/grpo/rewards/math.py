@@ -1,6 +1,6 @@
 """Math reward functions (GSM8K correctness, MATH-500 boxed answers)."""
 
-from .format import extract_xml_answer
+from .format import extract_xml_answer, _NUMBER_RE
 
 # ===========================================================================
 # Math utilities (from math500_utils)
@@ -194,10 +194,34 @@ def extract_hash_answer(text: str) -> str | None:
 def correctness_reward_func(
     prompts, completions, answer, step=None, run_name=None, verbose=False, **kwargs
 ) -> list[float]:
-    from .format import extract_answer_lenient, extract_xml_answer as _strict
+    """Strict-XML correctness reward.
+
+    run19 change: switched from `extract_answer_lenient` (which falls back to
+    "last number anywhere in the completion") to a strict `<answer>...</answer>`
+    extractor. The lenient extractor caused format collapse: completions with no
+    XML tags but a lucky trailing number got correctness=2.0, while
+    well-formatted-but-wrong completions got 0 — gradient pushed the model to
+    abandon `<reasoning>`/`<answer>` tags entirely (run17 step ~4000+ produced
+    `<Reasoning>` typo'd headers and no closing tags).
+
+    Now: missing `<answer>` tag → reward 0. This makes format a hard precondition
+    for correctness, restoring the format anchor that `xmlcount`/`soft_format`
+    were too small (and too group-relative under `filter_zero_correct_groups`)
+    to provide on their own.
+    """
+    from .format import extract_xml_answer as _strict
     responses = [completion[0]["content"] for completion in completions]
     q = prompts[0][-1]["content"]
-    extracted_responses = [extract_answer_lenient(r) for r in responses]
+
+    def _extract_strict_number(text: str) -> str | None:
+        # Hard requirement: <answer>...</answer> must be present.
+        if "<answer>" not in text:
+            return None
+        inner = text.split("<answer>", 1)[1].split("</answer>", 1)[0]
+        nums = _NUMBER_RE.findall(inner)
+        return nums[-1].replace(",", "") if nums else None
+
+    extracted_responses = [_extract_strict_number(r) for r in responses]
 
     def _norm(s):
         if s is None:

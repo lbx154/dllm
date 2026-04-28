@@ -1,0 +1,72 @@
+[
+  {
+    "id": "good_xml_correct",
+    "desc": "well-formed XML with correct numeric answer",
+    "answer": "91",
+    "completion": "<reasoning>\nBob asked 4×7 + 28×3.0 / 4 - 7 = 28+21-7 = 42... actually let's recompute. Bob created 91 questions in total.\n</reasoning>\n<answer>\n91\n</answer>\n",
+    "expects": {"xmlcount": "max", "soft": "max", "strict": "max", "int": "max", "corr": "max"}
+  },
+  {
+    "id": "good_xml_wrong_answer",
+    "desc": "well-formed XML but wrong number",
+    "answer": "91",
+    "completion": "<reasoning>\nMy arithmetic was off.\n</reasoning>\n<answer>\n42\n</answer>\n",
+    "expects": {"xmlcount": "max", "soft": "max", "strict": "max", "int": "max", "corr": "zero"}
+  },
+  {
+    "id": "no_tags_lucky_digit",
+    "desc": "format-collapsed prose ending in correct number — must NOT be rewarded for correctness (run19 fix)",
+    "answer": "91",
+    "completion": "Bob created 91 questions.",
+    "expects": {"xmlcount": "zero", "soft": "zero", "strict": "zero", "corr": "zero"}
+  },
+  {
+    "id": "no_tags_wrong_digit",
+    "desc": "format-collapsed prose with wrong number",
+    "answer": "91",
+    "completion": "Some random text 7 8 9.",
+    "expects": {"xmlcount": "zero", "soft": "zero", "strict": "zero", "corr": "zero"}
+  },
+  {
+    "id": "format_collapsed",
+    "desc": "the actual run17 collapse mode: <Reasoning> typo'd header, no answer",
+    "answer": "91",
+    "completion": "<Reasoning>\nToargamel bought 4 tires ... was8",
+    "expects": {"xmlcount": "zero", "soft": "zero", "strict": "zero", "corr": "zero"}
+  },
+  {
+    "id": "answer_with_commas",
+    "desc": "comma-formatted number in <answer>",
+    "answer": "1234",
+    "completion": "<reasoning>\nAdd them up.\n</reasoning>\n<answer>\n1,234\n</answer>\n",
+    "expects": {"xmlcount": "max", "corr": "max"}
+  },
+  {
+    "id": "answer_trailing_zero",
+    "desc": "91.0 must equal 91 after normalisation",
+    "answer": "91",
+    "completion": "<reasoning>\nFloat arithmetic.\n</reasoning>\n<answer>\n91.0\n</answer>\n",
+    "expects": {"corr": "max"}
+  },
+  {
+    "id": "hash_format_only",
+    "desc": "GSM8K-native '#### 91' format without XML — strict corr should be 0 (no <answer> tag)",
+    "answer": "91",
+    "completion": "Reasoning here.\n#### 91",
+    "expects": {"xmlcount": "zero", "strict": "zero", "corr": "zero"}
+  },
+  {
+    "id": "boxed_only",
+    "desc": "\\boxed{91} without XML wrapper — strict corr should be 0",
+    "answer": "91",
+    "completion": "We compute and obtain $\\boxed{91}$.",
+    "expects": {"xmlcount": "zero", "strict": "zero", "corr": "zero"}
+  },
+  {
+    "id": "tail_after_close",
+    "desc": "garbage after </answer> must NOT subtract from xmlcount (run11 bug)",
+    "answer": "91",
+    "completion": "<reasoning>\nx\n</reasoning>\n<answer>\n91\n</answer>\nrandom trailing tokens that LLaDA loves to emit",
+    "expects": {"xmlcount": "pos", "corr": "max"}
+  }
+]
